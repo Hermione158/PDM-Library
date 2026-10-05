@@ -64,47 +64,59 @@ COVER_COLORS = ["#33556E", "#6E2233", "#3F5B2E", "#7A6A2A", "#4A3B6B",
                 "#1F5A57", "#7C4A2A", "#31507A", "#6B2E5A", "#4C5A22"]
 
 
+# --- DATE / FORMAT HELPERS ---
+# today() — current local date (no time); base for due dates, holds and scans.
 def today():
     return dt.date.today()
 
 
+# iso(d) — date → "YYYY-MM-DD" string for SQLite storage.
 def iso(d):
     return d.isoformat() if isinstance(d, dt.date) else d
 
 
+# parse(s) — "YYYY-MM-DD" → date; inverse of iso().
 def parse(s):
     return dt.date.fromisoformat(s) if s else None
 
 
+# days_until(due) — days from today to a due date; negative means overdue.
 def days_until(due):
     return (parse(due) - today()).days
 
 
+# fmt_date(d) — date → "Oct 05, 2026" for labels and notices.
 def fmt_date(d):
     if isinstance(d, str):
         d = parse(d)
     return d.strftime("%b %d, %Y") if d else "-"
 
 
+# fmt_long(d) — date → long readable label; used in the exported report header.
 def fmt_long(d):
     if isinstance(d, str):
         d = parse(d)
     return d.strftime("%B %d, %Y") if d else "-"
 
 
+# initials(title) — first letters of a title; drawn on reservation icon tiles.
 def initials(title):
     words = [w for w in title.replace(":", " ").split() if w[0].isalpha()]
     return "".join(w[0].upper() for w in words[:2])
 
 
+# cover_color(key) — deterministic tile colour per title.
 def cover_color(key):
     return COVER_COLORS[sum(ord(c) for c in key) % len(COVER_COLORS)]
 
 
+# hash_pw(value) — SHA-256 of a password; only the hash is stored.
 def hash_pw(value):
     return hashlib.sha256(value.strip().encode("utf-8")).hexdigest()
 
 
+# --- UI TOOLKIT (buttons, cards, tiles, tables) ---
+# rounded_rect(...) — rounded rectangle on a canvas; backs pills and tiles.
 def rounded_rect(cv, x1, y1, x2, y2, r, fill, outline=None, width=1):
     outline = fill if outline is None else outline
     cv.create_rectangle(x1 + r, y1, x2 - r, y2, fill=fill, outline=outline, width=width)
@@ -115,6 +127,7 @@ def rounded_rect(cv, x1, y1, x2, y2, r, fill, outline=None, width=1):
     cv.create_oval(x2 - 2 * r, y2 - 2 * r, x2, y2, fill=fill, outline=outline, width=width)
 
 
+# widget_bg(widget) — nearest set background colour walking up the widget tree.
 def widget_bg(widget):
     try:
         bg = widget.cget("bg")
@@ -125,6 +138,7 @@ def widget_bg(widget):
         return WHITE
 
 
+# pill(...) — small status lozenge; kind picks the colour (status pills, counts).
 def pill(parent, text, kind="neutral", anchor="center"):
     key = str(text).strip().lower()
     bg, fg = PILL_STYLES.get(key, PILL_STYLES.get(kind, PILL_STYLES["neutral"]))
@@ -138,6 +152,7 @@ def pill(parent, text, kind="neutral", anchor="center"):
     return cv
 
 
+# button(...) — themed button (primary / ghost / danger); stays readable when disabled.
 def button(parent, text, command=None, kind="primary", width=None, icon=None):
     if kind == "primary":
         bg, fg, active, border = MAROON, WHITE, MAROON_HOVER, MAROON
@@ -160,6 +175,7 @@ def button(parent, text, command=None, kind="primary", width=None, icon=None):
     return b
 
 
+# check_row(...) — labelled checkbox row with optional count; filter panels.
 def check_row(parent, text, var, command=None, count=None, pady=3, side=None):
     line = tk.Frame(parent, bg=widget_bg(parent))
     if side:
@@ -176,6 +192,7 @@ def check_row(parent, text, var, command=None, count=None, pady=3, side=None):
                    font=(BODY, 10), cursor="hand2", anchor="w")
     lab.pack(side="left", fill="x", expand=True, padx=(7, 0))
 
+    # flip(event) — toggles the row checkbox and runs its command.
     def flip(event=None):
         var.set(not var.get())
         if command:
@@ -188,6 +205,7 @@ def check_row(parent, text, var, command=None, count=None, pady=3, side=None):
     return line
 
 
+# card(...) — white rounded panel; the basic content container.
 def card(parent, pad=18):
     fr = tk.Frame(parent, bg=WHITE, highlightthickness=1,
                   highlightbackground=LINE)
@@ -197,6 +215,7 @@ def card(parent, pad=18):
     return fr
 
 
+# section_title(...) — panel heading with optional sub-line; returns the header frame.
 def section_title(parent, text, sub=None):
     wrap = tk.Frame(parent, bg=WHITE)
     wrap.pack(fill="x")
@@ -214,6 +233,7 @@ def section_title(parent, text, sub=None):
     return row
 
 
+# stat_card(...) — KPI tile (label, big value, note, icon); dashboard + My loans.
 def stat_card(parent, label, value, note, icon, note_color=MAROON):
     fr = tk.Frame(parent, bg=WHITE, highlightthickness=1, highlightbackground=LINE)
     fr.pack(side="left", fill="both", expand=True, padx=(0, 12))
@@ -235,6 +255,7 @@ def stat_card(parent, label, value, note, icon, note_color=MAROON):
     return fr
 
 
+# cover_tile(...) — small cover tile painted from the title; catalog + loan rows.
 def cover_tile(parent, title, width=58, height=76):
     cv = tk.Canvas(parent, width=width, height=height,
                    bg=cover_color(title), highlightthickness=0, bd=0)
@@ -248,6 +269,7 @@ def cover_tile(parent, title, width=58, height=76):
 
 
 class ScrollFrame(tk.Frame):
+    # ScrollFrame — scrollable container; the wheel handler scrolls on Windows.
     def __init__(self, parent, bg=WHITE):
         super().__init__(parent, bg=bg)
         self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
@@ -265,10 +287,12 @@ class ScrollFrame(tk.Frame):
             "<MouseWheel>", self._wheel))
         self.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
 
+    # _wheel(event) — scrolls the canvas; bound to <MouseWheel>.
     def _wheel(self, event):
         self.canvas.yview_scroll(int(-event.delta / 120), "units")
 
 
+# tree(...) — themed Treeview with fixed columns; lists, registers, inventory.
 def tree(parent, columns, widths, height=8):
     style = ttk.Style()
     style.theme_use("clam")
@@ -286,6 +310,7 @@ def tree(parent, columns, widths, height=8):
     return tv
 
 
+# attach_scroll(tv, parent) — vertical scrollbar wired to a tree.
 def attach_scroll(tv, parent):
     sb = ttk.Scrollbar(parent, orient="vertical", command=tv.yview)
     tv.configure(yscrollcommand=sb.set)
@@ -293,6 +318,7 @@ def attach_scroll(tv, parent):
 
 
 class Toast(tk.Toplevel):
+    # Toast — small auto-fading popup; level picks info / warn / error styling.
     def __init__(self, master, title, message, level="info"):
         super().__init__(master)
         self.overrideredirect(True)
@@ -311,34 +337,42 @@ class Toast(tk.Toplevel):
         self.after(4200, self.destroy)
 
 
+# --- DATABASE LAYER ---
 class Database:
+    # Database — one SQLite connection per run; rows behave like dicts.
     def __init__(self, path=DB_PATH):
         self.path = path
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
 
+    # all(sql, args) — every matching row; use for lists and feeds.
     def all(self, sql, args=()):
         return self.conn.execute(sql, args).fetchall()
 
+    # one(sql, args) — first matching row or None; use for lookups.
     def one(self, sql, args=()):
         return self.conn.execute(sql, args).fetchone()
 
+    # run(sql, args) — INSERT / UPDATE / DELETE + commit; returns the new row id.
     def run(self, sql, args=()):
         cur = self.conn.execute(sql, args)
         self.conn.commit()
         return cur.lastrowid
 
+    # scalar(sql, args, default) — single value (counts, settings); default when empty.
     def scalar(self, sql, args=(), default=0):
         row = self.conn.execute(sql, args).fetchone()
         if row is None or row[0] is None:
             return default
         return row[0]
 
+    # close() — shuts the SQLite connection.
     def close(self):
         self.conn.close()
 
 
+# --- SEED DATA (catalog, people) ---
 BOOKS = [
     ("Python Programming: An Introduction to Computer Science", "John M. Zelle",
      "Programming", "Computer Science", "Franklin, Beedle", "3rd edition", 2023,
@@ -466,17 +500,17 @@ BOOKS = [
 
 STUDENTS = [
     ("2024-01842", "Alyssa M. Reyes", "BS Information Systems", "2nd Year",
-     "03152005"),
+     "B", "03152005"),
     ("2023-00615", "Joshua P. Lim", "BS Computer Science", "3rd Year",
-     "07222004"),
+     "C", "07222004"),
     ("2024-02481", "Denise R. Flores", "Bachelor of Elementary Education",
-     "2nd Year", "11092005"),
+     "2nd Year", "A", "11092005"),
     ("2022-00988", "Carlo D. Ramos", "BS Business Administration", "4th Year",
-     "01042003"),
+     "D", "01042003"),
     ("2025-01177", "Maria C. Delos Santos", "BS Psychology", "1st Year",
-     "06182006"),
+     "A", "06182006"),
     ("2023-03390", "Kevin B. Aguilar", "BS Secondary Education", "3rd Year",
-     "09252004"),
+     "B", "09252004"),
 ]
 
 STAFF = [
@@ -490,12 +524,14 @@ ADMINS = [
     ("admin", "Mae Ann D.C Basa", "System Administrator", "pdmadmin"),
 ]
 
+# --- POLICY TUNABLES (mirrored into settings on launch) ---
 LOAN_DAYS = 3
 BOOK_LIMIT = 5
 MAX_RENEWALS = 3
 HOLD_DAYS = 3
 SDO_AFTER = 2
 RENEW_WINDOW = 1
+# --- DATABASE SCHEMA ---
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -505,6 +541,7 @@ CREATE TABLE IF NOT EXISTS users (
     password TEXT NOT NULL,
     program TEXT DEFAULT '',
     year_level TEXT DEFAULT '',
+    section TEXT DEFAULT '',
     birthdate TEXT DEFAULT '',
     status TEXT DEFAULT 'active',
     joined TEXT
@@ -587,9 +624,15 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 
+# --- DB SETUP + SEEDING ---
+# init_db(db) — schema + seed on first launch; re-seeds the 3 policy settings every launch; see WORKFLOW.md section 2.
 def init_db(db):
     db.conn.executescript(SCHEMA)
     db.conn.commit()
+    # adds section to databases created before that column existed.
+    if not any(row["name"] == "section"
+               for row in db.conn.execute("PRAGMA table_info(users)")):
+        db.run("ALTER TABLE users ADD COLUMN section TEXT DEFAULT ''")
     for key, value in (("renew_window", RENEW_WINDOW), ("loan_days", LOAN_DAYS),
                        ("sdo_after", SDO_AFTER)):
         db.run("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
@@ -599,14 +642,15 @@ def init_db(db):
     seed_db(db)
 
 
+# seed_db(db) — catalog, people and default settings; fresh databases only.
 def seed_db(db):
     now = iso(today())
-    for username, name, program, year, bday in STUDENTS:
+    for username, name, program, year, section, bday in STUDENTS:
         db.run(
             "INSERT INTO users(username,name,role,password,program,year_level,"
-            "birthdate,status,joined) VALUES(?,?,?,?,?,?,?,?,?)",
-            (username, name, "student", hash_pw(bday), program, year, bday,
-             "active", now))
+            "section,birthdate,status,joined) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (username, name, "student", hash_pw(bday), program, year, section,
+             bday, "active", now))
     for username, name, role, password in STAFF:
         db.run(
             "INSERT INTO users(username,name,role,password,program,year_level,"
@@ -639,20 +683,25 @@ def seed_db(db):
     seed_activity(db)
 
 
+# --- READ HELPERS (lookups, counts, queues) ---
+# setting(db, key, default) — one policy value from settings, or the default.
 def setting(db, key, default):
     row = db.one("SELECT value FROM settings WHERE key=?", (key,))
     return int(row[0]) if row else default
 
 
+# user_by_id(db, uid) — account row by id.
 def user_by_id(db, uid):
     return db.one("SELECT * FROM users WHERE id=?", (uid,))
 
 
+# student(db, username) — student account row by student number.
 def student(db, username):
     return db.one("SELECT * FROM users WHERE username=? AND role='student'",
                   (username,))
 
 
+# copy_of(db, accession) — copy row with title, by barcode.
 def copy_of(db, accession):
     return db.one(
         "SELECT c.*, b.title, b.author, b.call_no, b.subject, b.category, "
@@ -661,11 +710,13 @@ def copy_of(db, accession):
         (accession.strip(),))
 
 
+# available_count(db, book_id) — free copies of a title; drives availability pills.
 def available_count(db, book_id):
     return db.scalar("SELECT COUNT(*) FROM copies WHERE book_id=? AND "
                      "status='available'", (book_id,))
 
 
+# copies_of(db, book_id) — every copy row of a title.
 def copies_of(db, book_id):
     return db.all(
         "SELECT c.*, l.due_date, l.status AS loan_status, u.name AS borrower "
@@ -674,6 +725,7 @@ def copies_of(db, book_id):
         "LEFT JOIN users u ON u.id=l.user_id WHERE c.book_id=?", (book_id,))
 
 
+# held_copy(db, book_id) — the reserved, unloaned copy a request or checkout consumes.
 def held_copy(db, book_id):
     """A copy of this title sitting on the reserved shelf, free to be issued."""
     return db.one(
@@ -682,11 +734,13 @@ def held_copy(db, book_id):
         "l.status IN ('active','overdue')) ORDER BY id LIMIT 1", (book_id,))
 
 
+# active_loan(db, copy_id) — the live loan on a copy, if any.
 def active_loan(db, copy_id):
     return db.one("SELECT * FROM loans WHERE copy_id=? AND status IN "
                   "('active','overdue')", (copy_id,))
 
 
+# my_loans(db, user_id) — active + overdue loans with book info, soonest due first.
 def my_loans(db, user_id):
     return db.all(
         "SELECT l.*, c.accession, c.shelf, b.title, b.author, b.call_no "
@@ -696,6 +750,7 @@ def my_loans(db, user_id):
         "ORDER BY l.due_date", (user_id,))
 
 
+# my_reservations(db, user_id) — requests, pickups and queue rows, actionable first.
 def my_reservations(db, user_id):
     return db.all(
         "SELECT r.*, b.title, b.author, b.call_no, b.id AS bid FROM "
@@ -705,11 +760,13 @@ def my_reservations(db, user_id):
         (user_id,))
 
 
+# reservation_for(db, book_id, user_id) — this student's row on a title, if any.
 def reservation_for(db, book_id, user_id):
     return db.one("SELECT * FROM reservations WHERE book_id=? AND user_id=?",
                   (book_id, user_id))
 
 
+# queue_for(db, book_id) — waiting queue of a title in position order.
 def queue_for(db, book_id):
     return db.all(
         "SELECT r.*, u.username, u.name FROM reservations r "
@@ -717,6 +774,8 @@ def queue_for(db, book_id):
         "r.status='waiting' ORDER BY r.position", (book_id,))
 
 
+# --- NOTIFICATIONS + AUDIT ---
+# notify(...) — one message-centre row; user_id None = system-wide; repeats swallowed by the UNIQUE dedupe key; see D7.
 def notify(db, user_id, title, body, level="info", dedupe=None, kind=None):
     try:
         db.run("INSERT INTO notifications(user_id,title,body,level,kind,dedupe,"
@@ -728,6 +787,7 @@ def notify(db, user_id, title, body, level="info", dedupe=None, kind=None):
         return False
 
 
+# announce_case_closed(db, case_id, how) — system-wide "SDO case acknowledged" notice; deduped per case; see §10 rows 10/10b.
 def announce_case_closed(db, case_id, how):
     row = db.one(
         "SELECT s.id, u.name, u.username, b.title FROM sdo_cases s "
@@ -742,6 +802,7 @@ def announce_case_closed(db, case_id, how):
                   "info", f"sdoack:{row['id']}")
 
 
+# log_tx(...) — one audit row (Checkout / Return / Renewal); feeds charts and tables.
 def log_tx(db, user_id, copy_id, tx_type, staff_id, status="Completed",
            note=""):
     db.run("INSERT INTO transactions(ts,user_id,copy_id,type,staff_id,status,"
@@ -750,6 +811,8 @@ def log_tx(db, user_id, copy_id, tx_type, staff_id, status="Completed",
             tx_type, staff_id, status, note))
 
 
+# --- BORROWING RULES (gate, checkout, holds, returns, renewals) ---
+# eligibility(db, user) — borrowing gate: account active, 0 overdue, under the limit; status re-read live; see §11 + B1.5.
 def eligibility(db, user):
     if not user:
         return False, "Account not found"
@@ -768,6 +831,7 @@ def eligibility(db, user):
     return True, f"{loans} of {setting(db, 'book_limit', BOOK_LIMIT)} books"
 
 
+# checkout(db, user, accessions, staff) — issues copies (due = today + loan_days); consumes the holder's reservation; returns per-copy (accession, ok, msg); see P4 + B2.
 def checkout(db, user, accessions, staff):
     results = []
     for accession in accessions:
@@ -810,12 +874,14 @@ def checkout(db, user, accessions, staff):
     return results
 
 
+# requeue(db, book_id) — renumbers a title's waiting queue 1..n after a change.
 def requeue(db, book_id):
     waiting = queue_for(db, book_id)
     for i, row in enumerate(waiting, start=1):
         db.run("UPDATE reservations SET position=? WHERE id=?", (i, row["id"]))
 
 
+# release_hold(db, book_id) — hands a freed copy to the next waiter (ready) or back to the shelf; see §10 row 8.
 def release_hold(db, book_id):
     """Match reserved-but-unloaned copies of a title to its outstanding holds.
 
@@ -853,6 +919,7 @@ def release_hold(db, book_id):
     requeue(db, book_id)
 
 
+# release_expired_holds(db) — deletes past-deadline ready holds, notifies, promotes the next waiter; see §10 row 9.
 def release_expired_holds(db):
     """Drop ready holds whose pickup window has passed."""
     alerts = []
@@ -870,6 +937,7 @@ def release_expired_holds(db):
     return alerts
 
 
+# return_book(db, accession, staff) — closes the loan, promotes the queue, auto-acknowledges SDO cases (block stays); returns (ok, msg); see §10 rows 7/10.
 def return_book(db, accession, staff):
     copy = copy_of(db, accession.strip())
     if not copy:
@@ -917,6 +985,7 @@ def return_book(db, accession, staff):
     return True, message
 
 
+# renew_loan(db, loan_id, staff) — extends due to today + loan_days inside the window unless capped, overdue or awaited; returns (ok, msg); see A4.4 / B3.3.
 def renew_loan(db, loan_id, staff):
     loan = db.one("SELECT * FROM loans WHERE id=?", (loan_id,))
     if not loan:
@@ -949,6 +1018,7 @@ def renew_loan(db, loan_id, staff):
     return True, f"Extended to {fmt_date(due)}"
 
 
+# reserve(db, book_id, user) — instant ready hold when a copy is free, else a queue slot; returns (ok, msg); see A-catalog.
 def reserve(db, book_id, user):
     book = db.one("SELECT * FROM books WHERE id=?", (book_id,))
     if not book:
@@ -985,6 +1055,7 @@ def reserve(db, book_id, user):
     return True, f"Position #{next_pos} of {total} in the queue"
 
 
+# request_borrow(db, book_id, user) — "Borrow today": holds a free copy with no expiry for the desk; returns (ok, msg); see A3.3b.
 def request_borrow(db, book_id, user):
     """Student asks for a copy to be issued today; the desk processes it."""
     book = db.one("SELECT * FROM books WHERE id=?", (book_id,))
@@ -1012,6 +1083,7 @@ def request_borrow(db, book_id, user):
     return True, "Sent to the library desk - collect your book today"
 
 
+# cancel_reservation(db, res_id, user) — deletes one reservation and re-matches the copy; see A.5.
 def cancel_reservation(db, res_id, user):
     res = db.one("SELECT * FROM reservations WHERE id=? AND user_id=?",
                  (res_id, user["id"]))
@@ -1022,6 +1094,8 @@ def cancel_reservation(db, res_id, user):
     return True, "Reservation cancelled"
 
 
+# --- OVERDUE SCAN + REPORTING ---
+# run_overdue_scan(db, silent) — reminders, overdue flags, final warnings, SDO cases + blocks; runs on launch, login and every 60 s; see §10 / P5.
 def run_overdue_scan(db, silent=True):
     new_alerts = []
     new_alerts.extend(release_expired_holds(db))
@@ -1098,12 +1172,14 @@ def run_overdue_scan(db, silent=True):
     return new_alerts
 
 
+# renewals_remaining(db, user_id) — renewals left on the least-renewed active loan.
 def renewals_remaining(db, user_id):
     loans = my_loans(db, user_id)
     return max(0, setting(db, "max_renewals", MAX_RENEWALS) -
                max([l["renewals"] for l in loans], default=0))
 
 
+# dashboard_stats(db) — KPI counts for the admin dashboard; see C.1.
 def dashboard_stats(db):
     total = db.scalar("SELECT COUNT(*) FROM copies")
     available = db.scalar("SELECT COUNT(*) FROM copies WHERE status='available'")
@@ -1119,6 +1195,7 @@ def dashboard_stats(db):
                 escalated=escalated, titles=titles)
 
 
+# escalation_buckets(db) — overdue loans split into warn / escalated / pending / acknowledged; see C1.4 / C4.2.
 def escalation_buckets(db):
     rows = db.all("SELECT l.due_date, s.status AS sdo FROM loans l "
                   "LEFT JOIN sdo_cases s ON s.loan_id=l.id "
@@ -1138,6 +1215,7 @@ def escalation_buckets(db):
     return b
 
 
+# weekly_activity(db) — last-7-days transaction counts for the circulation chart.
 def weekly_activity(db):
     labels = []
     counts = []
@@ -1150,6 +1228,7 @@ def weekly_activity(db):
     return labels, counts
 
 
+# recent_transactions(db, limit) — newest audit rows with user / copy / staff names.
 def recent_transactions(db, limit=8):
     return db.all(
         "SELECT t.*, u.username, u.name, c.accession, s.name AS staff "
@@ -1159,16 +1238,21 @@ def recent_transactions(db, limit=8):
         "ORDER BY t.ts DESC LIMIT ?", (limit,))
 
 
+# tx_time(iso_ts) — transaction timestamp → short display time.
 def tx_time(iso_ts):
     try:
         return dt.datetime.fromisoformat(iso_ts).strftime("%I:%M %p").lstrip("0")
     except Exception:
         return iso_ts
+# acc(book_id, i) — builds the PDM-xxxxxx accession for copy i of a title.
 def acc(book_id, i=0):
     return f"PDM-{1000 + book_id * 40 + i:06d}"
 
 
+# --- DEMO LOANS, HOLDS + NOTICES (seed only) ---
+# seed_activity(db) — demo loans, holds, cases + notices; seed only.
 def seed_activity(db):
+    # borrow(...) — plants one demo loan: checkout back_days ago, due late_days out.
     def borrow(username, book_id, copy_index, back_days, late_days,
                status="active", renewals=0):
         u = db.one("SELECT id FROM users WHERE username=?", (username,))
@@ -1190,6 +1274,7 @@ def seed_activity(db):
                 "Completed", f"Due {iso(due)}"))
         return loan_id
 
+    # reserve_slot(...) — plants one demo reservation in the given state.
     def reserve_slot(username, book_id, position, status, ahead_days=0):
         u = db.one("SELECT id FROM users WHERE username=?", (username,))
         created = today() - dt.timedelta(days=max(ahead_days, 1))
@@ -1259,6 +1344,8 @@ ROLE_LABEL = {"student": "Student", "staff": "Staff",
               "admin": "Administrator"}
 
 
+# --- FORM WIDGETS (auth + dialogs) ---
+# entry(...) — themed text input for auth forms and dialogs.
 def entry(parent, show=None, width=None):
     e = tk.Entry(parent, bg=WHITE, fg=INK, insertbackground=INK, relief="flat",
                  highlightthickness=1, highlightbackground=LINE,
@@ -1268,15 +1355,18 @@ def entry(parent, show=None, width=None):
     return e
 
 
+# placeholder(e, text) — grey hint text, cleared on focus.
 def placeholder(e, text):
     e.insert(0, text)
     e.configure(fg="#A79C8E")
 
+    # clears the hint text on focus.
     def on_focus_in(evt):
         if e.get() == text:
             e.delete(0, "end")
             e.configure(fg=INK)
 
+    # restores the hint text when left empty.
     def on_focus_out(evt):
         if not e.get().strip():
             e.delete(0, "end")
@@ -1288,6 +1378,7 @@ def placeholder(e, text):
     return e
 
 
+# field(...) — labelled entry with optional hint; auth forms.
 def field(parent, label, show=None, hint=None):
     wrap = tk.Frame(parent, bg=WHITE)
     wrap.pack(fill="x", pady=(0, 14))
@@ -1305,7 +1396,9 @@ def field(parent, label, show=None, hint=None):
     return e
 
 
+# --- APP (login, signup, startup); see WORKFLOW.md section 2 ---
 class App(tk.Tk):
+    # App — root window; builds auth, starts the scan tick; see WORKFLOW.md section 2.
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} - Lending & Reservation System")
@@ -1325,10 +1418,12 @@ class App(tk.Tk):
         self.build_login()
         self.after(2000, self.tick)
 
+    # clear_root() — empties the window before building the next screen.
     def clear_root(self):
         for child in self.winfo_children():
             child.destroy()
 
+    # tick() — 60 s heartbeat: runs the overdue scan, toasts new alerts, reschedules itself.
     def tick(self):
         try:
             new = run_overdue_scan(self.db)
@@ -1341,6 +1436,7 @@ class App(tk.Tk):
             pass
         self.after(60000, self.tick)
 
+    # build_auth_left(left) — branding panel shared by the sign-in / signup screens.
     def build_auth_left(self, left):
         brand = tk.Frame(left, bg=MAROON_DARK)
         brand.pack(anchor="nw", padx=54, pady=(50, 0))
@@ -1388,6 +1484,7 @@ class App(tk.Tk):
                  font=(BODY, 9), wraplength=460, justify="left").pack(
             side="bottom", anchor="w", padx=54, pady=40)
 
+    # build_login() — sign-in form with role tabs (student / staff / admin).
     def build_login(self):
         self.clear_root()
         self.user = None
@@ -1425,6 +1522,7 @@ class App(tk.Tk):
         tabs.pack(fill="x", pady=(0, 22))
         tab_refs = {}
 
+        # highlights the active role tab.
         def select_role(role):
             self.login_role.set(role)
             for key, ref in tab_refs.items():
@@ -1436,7 +1534,7 @@ class App(tk.Tk):
             id_label.configure(text={"student": "Student number",
                                      "staff": "Staff ID",
                                      "admin": "Administrator ID"}[role])
-            id_hint.configure(text={"student": "e.g. 2024-01842",
+            id_hint.configure(text={"student": "e.g. 2024-018423",
                                     "staff": "e.g. staff",
                                     "admin": "e.g. admin"}[role])
             if role == "student":
@@ -1466,7 +1564,7 @@ class App(tk.Tk):
         id_row = tk.Frame(form, bg=WHITE, highlightthickness=1,
                           highlightbackground=LINE)
         id_row.pack(fill="x", pady=(0, 16))
-        id_hint = tk.Label(id_row, text="e.g. 2024-01842", bg=WHITE,
+        id_hint = tk.Label(id_row, text="e.g. 2024-018423", bg=WHITE,
                            fg="#A79C8E", font=(BODY, 11), width=14)
         id_hint.pack(side="left", padx=(10, 0))
         self.id_entry = entry(id_row)
@@ -1530,6 +1628,7 @@ class App(tk.Tk):
         select_role("student")
         self.id_entry.focus_set()
 
+    # attempt_login() — checks credentials + role tab, then opens the shell; see P1.
     def attempt_login(self):
         role = self.login_role.get()
         username = self.id_entry.get().strip()
@@ -1550,6 +1649,7 @@ class App(tk.Tk):
         self.login_error.configure(text="")
         self.open_shell(user)
 
+    # build_signup() — registration form (number, name, program, year, passwords).
     def build_signup(self):
         self.clear_root()
         self.user = None
@@ -1582,6 +1682,7 @@ class App(tk.Tk):
                  font=(BODY, 11), anchor="w", wraplength=380,
                  justify="left").pack(fill="x", pady=(6, 20))
 
+        # labelled readonly dropdown for the signup form.
         def combo_field(label, values, state, width=16):
             wrap = tk.Frame(form, bg=WHITE)
             wrap.pack(fill="x", pady=(0, 14))
@@ -1602,7 +1703,7 @@ class App(tk.Tk):
         id_row = tk.Frame(form, bg=WHITE, highlightthickness=1,
                           highlightbackground=LINE)
         id_row.pack(fill="x", pady=(0, 14))
-        tk.Label(id_row, text="e.g. 2024-01842", bg=WHITE, fg="#A79C8E",
+        tk.Label(id_row, text="e.g. 2024-018423", bg=WHITE, fg="#A79C8E",
                  font=(BODY, 11), width=14).pack(side="left", padx=(10, 0))
         self.su_id = entry(id_row)
         self.su_id.pack(side="left", fill="x", expand=True, ipady=5)
@@ -1613,7 +1714,9 @@ class App(tk.Tk):
         self.su_program = combo_field("Program", programs, "readonly")
         self.su_year = combo_field("Year level",
                                    ["1st Year", "2nd Year", "3rd Year",
-                                    "4th Year", "5th Year"], "readonly")
+                                    "4th Year"], "readonly")
+        self.su_section = combo_field("Section", ["A", "B", "C", "D"],
+                                      "readonly", width=6)
         self.su_pw = field(form, "Password", show="•")
         self.su_pw.configure(highlightbackground=LINE)
         self.su_pw2 = field(form, "Confirm password", show="•")
@@ -1656,19 +1759,22 @@ class App(tk.Tk):
         self.su_year.set("1st Year")
         self.su_id.focus_set()
 
+    # attempt_signup() — validates dddd-dddddd + name + program/year/section + passwords, creates the account; see §11.
     def attempt_signup(self):
         username = self.su_id.get().strip()
         name = self.su_name.get().strip()
         program = self.su_program.get().strip()
         year = self.su_year.get().strip()
+        section = self.su_section.get().strip()
         password = self.su_pw.get()
         confirm = self.su_pw2.get()
 
+        # shows a red signup error and stops.
         def fail(msg):
             self.su_error.configure(text=msg)
 
-        if not re.fullmatch(r"\d{4}-\d{5}", username):
-            fail("Student number should look like 2024-01842.")
+        if not re.fullmatch(r"\d{4}-\d{6}", username):
+            fail("Student number should look like 2024-018423.")
             return
         if self.db.one("SELECT id FROM users WHERE username=?", (username,)):
             fail("That student number is already registered - sign in "
@@ -1680,6 +1786,9 @@ class App(tk.Tk):
         if not program or not year:
             fail("Select your program and year level.")
             return
+        if section not in ("A", "B", "C", "D"):
+            fail("Select your section (A, B, C or D).")
+            return
         if len(password) < 6:
             fail("Password must be at least 6 characters.")
             return
@@ -1690,9 +1799,9 @@ class App(tk.Tk):
         self.su_error.configure(text="")
         self.db.run(
             "INSERT INTO users(username,name,role,password,program,year_level,"
-            "birthdate,status,joined) VALUES(?,?,?,?,?,?,?,?,?)",
-            (username, name, "student", hash_pw(password), program, year, "",
-             "active", iso(today())))
+            "section,birthdate,status,joined) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (username, name, "student", hash_pw(password), program, year,
+             section, "", "active", iso(today())))
         user = self.db.one("SELECT * FROM users WHERE username=?",
                            (username,))
         self.open_shell(user)
@@ -1700,6 +1809,7 @@ class App(tk.Tk):
               f"Welcome, {name.split()[0]}! Your library account is active.",
               "info")
 
+    # open_shell(user) — builds the Shell, scans, and toasts pending notifications.
     def open_shell(self, user):
         self.clear_root()
         self.user = user
@@ -1745,7 +1855,9 @@ TITLES = {
 }
 
 
+# --- SHELL (nav, bell, notification panel) ---
 class Shell(tk.Frame):
+    # Shell — role-coloured frame: sidebar, header, bell and the active screen.
     def __init__(self, app, user):
         super().__init__(app, bg=CREAM)
         self.app = app
@@ -1849,12 +1961,14 @@ class Shell(tk.Frame):
         self.body.pack(fill="both", expand=True, padx=34, pady=(8, 24))
         self.screens = {}
 
+    # _key_of(row) — nav key of an on-screen widget, if it is a registered screen.
     def _key_of(self, row):
         for key, (r, _) in self.nav_refs.items():
             if r is row:
                 return key
         return None
 
+    # make_bell(parent) — bell icon + unread badge wired to the notification panel.
     def make_bell(self, parent):
         wrap = tk.Frame(parent, bg=CREAM, width=42, height=42)
         wrap.pack_propagate(False)
@@ -1878,16 +1992,19 @@ class Shell(tk.Frame):
         self.bell_cv = cv
         return wrap
 
+    # my_notifications() — newest 30 rows for me plus system-wide.
     def my_notifications(self):
         return self.db.all(
             "SELECT * FROM notifications WHERE user_id IS NULL OR user_id=? "
             "ORDER BY ts DESC LIMIT 30", (self.user["id"],))
 
+    # unread() — my unread count (own + system-wide); drives the badge.
     def unread(self):
         return self.db.scalar(
             "SELECT COUNT(*) FROM notifications WHERE (user_id IS NULL OR "
             "user_id=?) AND read=0", (self.user["id"],))
 
+    # refresh_bell() — redraws the badge from unread().
     def refresh_bell(self):
         n = self.unread()
         if n <= 0:
@@ -1898,6 +2015,7 @@ class Shell(tk.Frame):
             self.bell_cv.itemconfigure(self.badge_txt, state="normal",
                                        text=str(min(n, 99)))
 
+    # show_notifications() — bell dropdown with Mark-all-read; see A.5–A.6.
     def show_notifications(self):
         if self.bell_panel and self.bell_panel.winfo_exists():
             self.bell_panel.destroy()
@@ -1944,10 +2062,12 @@ class Shell(tk.Frame):
                     "user_id=?", (self.user["id"],))
         panel.bind("<Escape>", lambda e: panel.destroy())
 
+    # start() — builds the sidebar for my role and opens the home screen.
     def start(self):
         self.navigate(self.nav[0][0])
         self.refresh_bell()
 
+    # navigate(key, **ctx) — swaps the body to a screen; SCREENS maps keys to builders.
     def navigate(self, key, **ctx):
         self.current = key
         self.ctx = ctx
@@ -1973,9 +2093,11 @@ class Shell(tk.Frame):
             builder(self)
         self.refresh_bell()
 
+    # set_header_actions(widget) — per-screen buttons in the header (e.g. Export report).
     def set_header_actions(self, widget):
         widget.pack(side="right", padx=10)
 
+    # logout() — confirms, then returns to sign-in.
     def logout(self):
         if messagebox.askyesno("Sign out", "End this session?"):
             self.app.build_login()
@@ -1996,6 +2118,7 @@ YEAR_RANGES = (("All years", None), ("2020 - 2026", (2020, 2026)),
                ("2010 - 2019", (2010, 2019)), ("Before 2010", (0, 2009)))
 
 
+# book_status(row) — availability pill text (Available / n left / Checked out …) from counts.
 def book_status(row):
     if row["avail"] > 0:
         return "Available"
@@ -2004,7 +2127,9 @@ def book_status(row):
     return "Checked out"
 
 
+# --- STUDENT SCREENS (catalog, details, loans, reservations) ---
 class CatalogScreen(tk.Frame):
+    # CatalogScreen — searchable catalog grid; students borrow / reserve here; see A-catalog.
     def __init__(self, shell, readonly=False):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -2023,6 +2148,7 @@ class CatalogScreen(tk.Frame):
         self.build()
         self.refresh()
 
+    # build() — lays out the search bar, filters, sort and results table.
     def build(self):
         head = tk.Frame(self, bg=WHITE, highlightthickness=1,
                         highlightbackground=LINE)
@@ -2103,6 +2229,7 @@ class CatalogScreen(tk.Frame):
         cb.pack(side="left", padx=8)
         cb.bind("<<ComboboxSelected>>", lambda e: self.after(1, self.refresh))
 
+    # reset_filters() — restores the default search, filters and sort.
     def reset_filters(self):
         for var in list(self.avail.values()) + list(self.materials.values()):
             var.set(True)
@@ -2113,6 +2240,7 @@ class CatalogScreen(tk.Frame):
         self.query.set("")
         self.refresh()
 
+    # where() — SQL filters for the current search text, field and dropdowns.
     def where(self):
         clauses, args = [], []
         q = self.query.get().strip() or self.entry.get().strip()
@@ -2130,14 +2258,15 @@ class CatalogScreen(tk.Frame):
                 args.extend([f"%{q.lower()}%"] * 4)
         return " AND ".join(clauses) if clauses else "1=1", args, q
 
+    # all_rows() — every catalog row with availability counts for filtering.
     def all_rows(self):
         where, args, _ = self.where()
         return self.db.all(SELECT_BOOK + " WHERE " + where, args)
 
+    # filtered(rows) — applies the in-memory filters and sort to catalog rows.
     def filtered(self, rows):
         chosen_status = {k for k, v in self.avail.items() if v.get()}
         chosen_mat = {k for k, v in self.materials.items() if v.get()}
-        chosen_sub = {k for k, v in self.subjects.items() if v.get()}
         rng = dict(YEAR_RANGES)[self.year_range.get()]
         out = []
         for row in rows:
@@ -2145,7 +2274,8 @@ class CatalogScreen(tk.Frame):
                 continue
             if row["material_type"] not in chosen_mat:
                 continue
-            if chosen_sub and row["subject"] not in chosen_sub:
+            box = self.subjects.get(row["subject"])
+            if box is not None and not box.get():
                 continue
             if rng and not (rng[0] <= (row["year"] or 0) <= rng[1]):
                 continue
@@ -2163,11 +2293,13 @@ class CatalogScreen(tk.Frame):
                                     r["title"].lower()))
         return out
 
+    # build_filters(rows) — availability / material / subject / year checkboxes from the rows.
     def build_filters(self, rows):
         pane = self.filter_pane
         for child in pane.winfo_children()[1:]:
             child.destroy()
 
+        # one titled checkbox group inside the filter panel.
         def group(title, pairs):
             tk.Label(pane, text=title, bg=WHITE, fg=MUTED,
                      font=(BODY, 9, "bold")).pack(anchor="w", pady=(14, 6))
@@ -2199,6 +2331,7 @@ class CatalogScreen(tk.Frame):
         cb.pack(fill="x")
         cb.bind("<<ComboboxSelected>>", lambda e: self.after(1, self.refresh))
 
+    # refresh() — re-queries and redraws the results for the current filters.
     def refresh(self):
         self.query.set(self.entry.get())
         self.mine = {}
@@ -2229,6 +2362,7 @@ class CatalogScreen(tk.Frame):
         for i, row in enumerate(rows):
             self.book_row(row, i == len(rows) - 1)
 
+    # book_row(row, last) — one catalog row: cover, meta, availability, Borrow today / Reserve buttons.
     def book_row(self, row, last):
         status = book_status(row)
         mine = self.mine.get(row["id"])
@@ -2290,9 +2424,11 @@ class CatalogScreen(tk.Frame):
         for wdg in (title_lbl, info):
             wdg.bind("<Button-1>", lambda e, r=row: self.open(r))
 
+    # open(row) — jumps to the details screen for a catalog row.
     def open(self, row):
         self.shell.navigate("details", book_id=row["id"])
 
+    # do_reserve(row) — reserves the row's title via reserve(); refreshes on success.
     def do_reserve(self, row):
         ok, msg = reserve(self.db, row["id"], self.shell.user)
         if ok:
@@ -2301,6 +2437,7 @@ class CatalogScreen(tk.Frame):
             messagebox.showinfo("Reservation", msg, parent=self)
         self.refresh()
 
+    # do_borrow(row) — sends a Borrow-today request via request_borrow(); refreshes on success.
     def do_borrow(self, row):
         ok, msg = request_borrow(self.db, row["id"], self.shell.user)
         if ok:
@@ -2308,6 +2445,7 @@ class CatalogScreen(tk.Frame):
         else:
             messagebox.showinfo("Borrow today", msg, parent=self)
         self.refresh()
+# tagged_tree(...) — tree with per-row colour tags for hold / overdue states.
 def tagged_tree(parent, columns, widths, rows, tags=None, height=6):
     tv = tree(parent, columns, widths, height=height)
     tv.tag_configure("available", background=WHITE)
@@ -2320,6 +2458,7 @@ def tagged_tree(parent, columns, widths, rows, tags=None, height=6):
 
 
 class DetailsScreen(tk.Frame):
+    # DetailsScreen — one title: cover, meta, copies, related titles, Borrow today / Reserve.
     def __init__(self, shell, book_id):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -2525,6 +2664,7 @@ class DetailsScreen(tk.Frame):
                  wraplength=250, justify="left").pack(
             side="left", padx=(0, 12), pady=12)
 
+    # related_card(parent, b) — clickable tile that opens a related title.
     def related_card(self, parent, b):
         frame = tk.Frame(parent, bg=WHITE, highlightthickness=1,
                          highlightbackground=LINE, cursor="hand2")
@@ -2545,6 +2685,7 @@ class DetailsScreen(tk.Frame):
             "details", book_id=b["id"]))
         return frame
 
+    # join() — reserves this title via reserve(); used by the details Reserve button.
     def join(self):
         ok, msg = reserve(self.db, self.book_id, self.shell.user)
         if ok:
@@ -2553,6 +2694,7 @@ class DetailsScreen(tk.Frame):
             messagebox.showinfo("Reservation", msg, parent=self)
         self.shell.navigate("details", book_id=self.book_id)
 
+    # do_borrow() — sends a Borrow-today request via request_borrow(); used by the details button.
     def do_borrow(self):
         ok, msg = request_borrow(self.db, self.book_id, self.shell.user)
         if ok:
@@ -2560,6 +2702,7 @@ class DetailsScreen(tk.Frame):
         else:
             messagebox.showinfo("Borrow today", msg, parent=self)
         self.shell.navigate("details", book_id=self.book_id)
+# switch_row(parent, title, note, value) — labelled on/off toggle row (reminder settings).
 def switch_row(parent, title, note, value=True):
     line = tk.Frame(parent, bg=WHITE)
     line.pack(fill="x", pady=7)
@@ -2572,6 +2715,7 @@ def switch_row(parent, title, note, value=True):
                    bd=0, cursor="hand2")
     cv.pack(side="right")
 
+    # repaints the toggle knob for the current on/off state.
     def draw():
         cv.delete("all")
         on = state.get()
@@ -2585,6 +2729,7 @@ def switch_row(parent, title, note, value=True):
     return line
 
 
+# loan_status_row(loan) — (pill text, kind) for a loan: overdue / due today / tomorrow / in n days / on time.
 def loan_status_row(loan):
     left = days_until(loan["due_date"])
     if left < 0:
@@ -2598,9 +2743,11 @@ def loan_status_row(loan):
     return "On time", "available"
 
 
+# LoansScreen — My loans: stats, due banner, loan rows with Renew, reservations, status; see A.3.
 class LoansScreen(tk.Frame):
     screen_key = "loans"
 
+    # Builds the whole My-loans page for the signed-in student.
     def __init__(self, shell):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -2748,6 +2895,7 @@ class LoansScreen(tk.Frame):
                  "appear here.", bg=WHITE, fg=MUTED, font=(BODY, 9),
                  wraplength=240, justify="center").pack(pady=(4, 0))
 
+    # loan_row(parent, loan) — one loan row: cover, meta, dates, pill, Renew button.
     def loan_row(self, parent, loan):
         left, tag = loan_status_row(loan)
         line = tk.Frame(parent, bg=WHITE, highlightthickness=1,
@@ -2788,6 +2936,7 @@ class LoansScreen(tk.Frame):
         tk.Label(checked, text=fmt_date(loan["checkout_date"]), bg=WHITE,
                  fg=MUTED, font=(BODY, 9), anchor="e").pack(anchor="e")
 
+    # reservation_row(parent, res) — one reservation row with its state label and Cancel button.
     def reservation_row(self, parent, res):
         line = tk.Frame(parent, bg=WHITE, highlightthickness=1,
                         highlightbackground=LINE)
@@ -2833,6 +2982,7 @@ class LoansScreen(tk.Frame):
         tk.Label(meta, text=right_note, bg=WHITE, fg=MUTED, font=(BODY, 9)).pack(
             anchor="e")
 
+    # renew(loan_id) — renews one loan via renew_loan(); toasts or shows the refusal; see A4.4.
     def renew(self, loan_id):
         ok, msg = renew_loan(self.db, loan_id, self.user)
         if ok:
@@ -2841,6 +2991,7 @@ class LoansScreen(tk.Frame):
             messagebox.showinfo("Renew", msg, parent=self)
         self.shell.navigate(self.screen_key)
 
+    # renew_all() — renews every eligible loan; toasts the count, lists skipped titles; see A4.5.
     def renew_all(self):
         done, skipped = 0, []
         for loan in my_loans(self.db, self.user["id"]):
@@ -2856,6 +3007,7 @@ class LoansScreen(tk.Frame):
             messagebox.showinfo("Renew", "\n".join(skipped[:6]), parent=self)
         self.shell.navigate(self.screen_key)
 
+    # cancel(res_id) — confirms, then cancels one reservation via cancel_reservation(); see A.5.
     def cancel(self, res_id):
         if not messagebox.askyesno("Cancel reservation",
                                    "Remove this reservation from the queue?",
@@ -2866,9 +3018,11 @@ class LoansScreen(tk.Frame):
         self.shell.navigate(self.screen_key)
 
 
+# ReservationsScreen — Active reservations page; reuses LoansScreen rows, list only; see A.4.
 class ReservationsScreen(LoansScreen):
     screen_key = "reservations"
 
+    # Builds the reservations list for the signed-in student.
     def __init__(self, shell):
         tk.Frame.__init__(self, shell.body, bg=CREAM)
         self.shell = shell
@@ -2920,7 +3074,10 @@ class ReservationsScreen(LoansScreen):
                      font=(BODY, 10, "bold"), anchor="w").pack(anchor="w")
             tk.Label(txt, text=note, bg=WHITE, fg=MUTED, font=(BODY, 9),
                      anchor="w").pack(anchor="w")
+# --- STAFF + ADMIN SCREENS (circulation, reports, users, cases) ---
+# CirculationScreen — staff desk: Requests list, Returns, Renew lookup, recent activity; see section B.
 class CirculationScreen(tk.Frame):
+    # Builds the desk workspace; opens on the Requests tab.
     def __init__(self, shell):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -2953,6 +3110,7 @@ class CirculationScreen(tk.Frame):
         self.host = scroll.body
         self.render()
 
+    # set_mode(mode) — switches the desk tab (Requests / Return / Renew) and redraws.
     def set_mode(self, mode):
         self.mode.set(mode)
         for key, ref in self.tabs.items():
@@ -2961,6 +3119,7 @@ class CirculationScreen(tk.Frame):
                           fg=WHITE if active else MUTED)
         self.render()
 
+    # render() — draws the active desk tab.
     def render(self):
         for child in self.host.winfo_children():
             child.destroy()
@@ -2978,6 +3137,7 @@ class CirculationScreen(tk.Frame):
             self.renew_view(main, side)
         self.recent(main)
 
+    # borrower_panel(parent) — student-number lookup shared by the Return / Renew tabs.
     def borrower_panel(self, parent):
         pane = parent
         if not self.borrower:
@@ -3031,6 +3191,7 @@ class CirculationScreen(tk.Frame):
                      wraplength=280, justify="left", anchor="w").pack(
                 fill="x", pady=(10, 0), padx=0)
 
+    # requests_view(main, side) — Borrow-today + pickup rows with a Process button each; see B2.
     def requests_view(self, main, side):
         wanted = self.db.all(
             "SELECT r.*, u.username, u.name, b.title, b.call_no FROM "
@@ -3091,6 +3252,7 @@ class CirculationScreen(tk.Frame):
                  font=tkfont.Font(family=HEAD, size=15, weight="bold"),
                  anchor="w").pack(fill="x", padx=14, pady=(2, 12))
 
+    # request_row(parent, res, kind) — one request row (borrow-today or pickup) with its Process button.
     def request_row(self, parent, res, kind):
         copy = held_copy(self.db, res["book_id"])
         line = tk.Frame(parent, bg=WHITE, highlightthickness=1,
@@ -3132,6 +3294,7 @@ class CirculationScreen(tk.Frame):
                lambda i=res["id"]: self.process_request(i), "primary").pack(
             anchor="e")
 
+    # process_request(res_id) — issues the held copy via checkout(); the row disappears; see B2.
     def process_request(self, res_id):
         res = self.db.one("SELECT * FROM reservations WHERE id=?", (res_id,))
         if not res:
@@ -3156,6 +3319,7 @@ class CirculationScreen(tk.Frame):
                 parent=self)
         self.render()
 
+    # find_student() — looks up the typed student number for the Return / Renew tabs.
     def find_student(self):
         username = self.id_entry.get().strip()
         user = self.db.one("SELECT * FROM users WHERE username=? AND role="
@@ -3169,6 +3333,7 @@ class CirculationScreen(tk.Frame):
             self.borrower = user
         self.render()
 
+    # return_view(main, side) — accession entry + the selected borrower's active loans.
     def return_view(self, main, side):
         step = card(main, pad=0)
         step.pack(fill="x")
@@ -3243,6 +3408,7 @@ class CirculationScreen(tk.Frame):
             tk.Label(txt, text=h["name"], bg=CREAM, fg=MUTED,
                      font=(BODY, 8), anchor="w").pack(anchor="w")
 
+    # do_return() — returns the typed accession via return_book(); advances the queue.
     def do_return(self):
         accession = self.ret_entry.get().strip()
         if not accession or accession == "PDM-":
@@ -3257,6 +3423,7 @@ class CirculationScreen(tk.Frame):
             messagebox.showwarning("Return", detail, parent=self)
         self.render()
 
+    # renew_view(main, side) — the selected borrower's active loans with a Renew button each; see B3.
     def renew_view(self, main, side):
         step = card(main, pad=0)
         step.pack(fill="x")
@@ -3308,6 +3475,7 @@ class CirculationScreen(tk.Frame):
         side1.pack(fill="x")
         self.borrower_panel(side1.inner)
 
+    # do_renew(loan_id) — renews one loan via renew_loan() as the desk; see B3.3.
     def do_renew(self, loan_id):
         ok, msg = renew_loan(self.db, loan_id, self.staff)
         if ok:
@@ -3316,6 +3484,7 @@ class CirculationScreen(tk.Frame):
             messagebox.showinfo("Renew", msg, parent=self)
         self.render()
 
+    # recent(main) — side panel with the newest circulation transactions.
     def recent(self, main):
         panel = card(main, pad=0)
         panel.pack(fill="x", pady=(16, 0))
@@ -3338,7 +3507,9 @@ class CirculationScreen(tk.Frame):
                  font=(BODY, 9)).pack(anchor="w", pady=(10, 0))
 
 
+# TransactionsScreen — filterable audit log (checkout / return / renewal); see B.4.
 class TransactionsScreen(tk.Frame):
+    # Builds the log screen; opens on the "All" filter.
     def __init__(self, shell):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -3374,6 +3545,7 @@ class TransactionsScreen(tk.Frame):
         sb.pack(side="right", fill="y")
         self.load()
 
+    # load() — redraws the log for the chosen type filter.
     def load(self):
         self.tv.delete(*self.tv.get_children())
         rows = recent_transactions(self.db, 300)
@@ -3385,7 +3557,9 @@ class TransactionsScreen(tk.Frame):
                 tx_time(r["ts"]), r["username"] or "-", r["name"] or "-",
                 r["accession"] or "-", r["type"], r["staff"] or "-",
                 r["status"], r["note"] or ""))
+# DashboardScreen — KPIs, circulation chart, escalation buckets, system feed, report export; see C.1.
 class DashboardScreen(tk.Frame):
+    # Builds the whole dashboard, including the Export report header button.
     def __init__(self, shell):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -3524,11 +3698,13 @@ class DashboardScreen(tk.Frame):
                  bg=WHITE, fg=MUTED, font=(BODY, 9)).pack(anchor="w",
                                                           pady=(10, 0))
 
+    # shelf_of(book_id) — first shelf code found for a title, "-" when unknown.
     def shelf_of(self, book_id):
         row = self.db.one("SELECT shelf FROM copies WHERE book_id=? LIMIT 1",
                           (book_id,))
         return row[0] if row else "-"
 
+    # draw_chart(cv, labels, counts) — paints the weekly circulation bars.
     def draw_chart(self, cv, labels, counts):
         cv.delete("all")
         w = cv.winfo_width() or 600
@@ -3550,6 +3726,7 @@ class DashboardScreen(tk.Frame):
             cv.create_text((x1 + x2) / 2, base + 16, text=label, fill=MUTED,
                            font=(BODY, 9))
 
+    # export() — writes library_report.txt (stats + inventory) and confirms the path.
     def export(self):
         path = os.path.join(BASE_DIR, "library_report.txt")
         stats = dashboard_stats(self.db)
@@ -3570,7 +3747,9 @@ class DashboardScreen(tk.Frame):
                             parent=self)
 
 
+# InventoryScreen — searchable catalog table with shelf, copies and the add-book form; see C.2.
 class InventoryScreen(tk.Frame):
+    # Builds the inventory screen with its search box and category filter.
     def __init__(self, shell):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -3619,6 +3798,7 @@ class InventoryScreen(tk.Frame):
         self.count_lbl.pack(anchor="w", pady=(10, 0))
         self.load()
 
+    # load() — redraws the table for the current search text and category.
     def load(self):
         self.tv.delete(*self.tv.get_children())
         q = self.query.get().lower().strip()
@@ -3642,11 +3822,13 @@ class InventoryScreen(tk.Frame):
                  f"Last inventory sync {dt.datetime.now().strftime('%I:%M %p')}"
                  .lstrip("0"))
 
+    # shelf_of(book_id) — first shelf code found for a title, "-" when unknown.
     def shelf_of(self, book_id):
         row = self.db.one("SELECT shelf FROM copies WHERE book_id=? LIMIT 1",
                           (book_id,))
         return row[0] if row else "-"
 
+    # add_book() — opens the add-to-catalog dialog; see C2.3–C2.5.
     def add_book(self):
         win = tk.Toplevel(self)
         win.title("Add book")
@@ -3680,6 +3862,7 @@ class InventoryScreen(tk.Frame):
                  relief="flat", highlightthickness=1, highlightbackground=LINE,
                  font=(BODY, 11), bd=6).pack(fill="x", pady=(4, 16))
 
+        # validates the dialog and inserts the book row plus its copies.
         def save():
             title = entries["title"].get().strip()
             if not title:
@@ -3716,7 +3899,9 @@ class InventoryScreen(tk.Frame):
         button(form, "Save to catalog", save, "primary").pack(fill="x")
 
 
+# UsersScreen — account table with double-click block / reinstate; see C.3.
 class UsersScreen(tk.Frame):
+    # Builds the users table; double-click a row to block / reinstate.
     def __init__(self, shell):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -3729,9 +3914,9 @@ class UsersScreen(tk.Frame):
                           "standing")
         holder = tk.Frame(panel.inner, bg=WHITE)
         holder.pack(fill="both", expand=True, pady=(14, 0))
-        self.tv = tree(holder, ["ID", "NAME", "ROLE", "PROGRAM", "ON LOAN",
-                                "OVERDUE", "STATUS"],
-                       [115, 210, 110, 260, 95, 95, 120], height=16)
+        self.tv = tree(holder, ["ID", "NAME", "ROLE", "PROGRAM", "SECTION",
+                                "ON LOAN", "OVERDUE", "STATUS"],
+                       [115, 200, 105, 215, 80, 90, 90, 120], height=16)
         sb = attach_scroll(self.tv, holder)
         self.tv.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
@@ -3742,6 +3927,7 @@ class UsersScreen(tk.Frame):
         hint.pack(anchor="w", pady=(10, 0))
         self.load()
 
+    # load() — redraws the table with per-user loan / overdue counts and status pills.
     def load(self):
         self.tv.delete(*self.tv.get_children())
         for u in self.db.all("SELECT * FROM users ORDER BY role, username"):
@@ -3753,9 +3939,10 @@ class UsersScreen(tk.Frame):
                 "'overdue'", (u["id"],))
             self.tv.insert("", "end", iid=str(u["id"]), values=(
                 u["username"], u["name"], u["role"].title(),
-                u["program"] or "-", loans, overdue,
+                u["program"] or "-", u["section"] or "-", loans, overdue,
                 "●  " + ("Active" if u["status"] == "active" else "Blocked")))
 
+    # toggle_status(event) — flips the double-clicked account active ↔ blocked (admins exempt); see C3.2–C3.4.
     def toggle_status(self, event):
         sel = self.tv.selection()
         if not sel:
@@ -3775,7 +3962,9 @@ class UsersScreen(tk.Frame):
         self.load()
 
 
+# CasesScreen — escalation counters plus the SDO register with Mark-acknowledged; see C.4.
 class CasesScreen(tk.Frame):
+    # Builds the counters and the register; pending rows carry the action button.
     def __init__(self, shell):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -3850,6 +4039,7 @@ class CasesScreen(tk.Frame):
                  bg=GOLD_SOFT, fg="#8A6A15", font=(BODY, 10), padx=14,
                  pady=12, anchor="w").pack(fill="x")
 
+    # ack(case_id) — marks one case acknowledged, announces it system-wide, refreshes the bell; see C4.4.
     def ack(self, case_id):
         self.db.run("UPDATE sdo_cases SET status='acknowledged', resolved_at=? "
                     "WHERE id=?", (iso(today()), case_id))
@@ -3875,6 +4065,7 @@ SCREENS = {
 }
 
 
+# main() — creates the database, builds the App and enters the Tk event loop.
 def main():
     app = App()
     app.mainloop()

@@ -211,7 +211,7 @@ flowchart TB
 
 | ID | Process | Inputs | Outputs | Reads | Writes | Main rules |
 |---|---|---|---|---|---|---|
-| **P1** | Authentication & registration | Credentials; registration form | Authenticated session, new account row | D1 | D1 | Password hash match; role tab must match `role`; signup validates format `\d{4}-\d{5}`, uniqueness, real name, program/year, password ≥ 6 and confirmation |
+| **P1** | Authentication & registration | Credentials; registration form | Authenticated session, new account row | D1 | D1 | Password hash match; role tab must match `role`; signup validates format `\d{4}-\d{6}`, uniqueness, real name, program/year, password ≥ 6 and confirmation |
 | **P2** | Catalog search & browse | Free-text query, search-in field, availability/material/subject/year filters, sort choice | Result list, availability pills | D2, D3 | — | Read-only for staff and admin; students also see reserve/waitlist actions |
 | **P3** | Reservation management | Reserve / cancel request | Queue position, "Ready for pickup" notice, staff hold notice | D3, D5, D7, D9 | D3, D5, D7 | One reservation per student per title; blocked if ≥ 5 active loans; ready holds expire after `HOLD_DAYS = 3` |
 | **P4** | Circulation processing | Borrower ID, accession barcode(s) | Loan rows, return status, transaction rows, queue advance | D1, D3, D4, D5, D6, D7, D9 | D3, D4, D5, D6, D7 | Eligibility gate (active, < 5 loans, 0 overdue); due = today + 3; return may promote the first waiter |
@@ -226,7 +226,7 @@ flowchart TB
 
 | Store | Table | Key columns | Purpose |
 |---|---|---|---|
-| D1 | `users` | `username` (student no. / staff / admin ID), `name`, `role`, `password` (hashed), `program`, `year_level`, `status` (`active`/`blocked`), `joined` | Accounts for all three roles |
+| D1 | `users` | `username` (student no. / staff / admin ID), `name`, `role`, `password` (hashed), `program`, `year_level`, `section` (A–D), `status` (`active`/`blocked`), `joined` | Accounts for all three roles |
 | D2 | `books` | `title`, `author`, `subject`, `category`, `publisher`, `edition`, `year`, `isbn`, `call_no`, `material_type`, `description` | Bibliographic records |
 | D3 | `copies` | `book_id`, `accession` (`PDM-xxxxxx`), `shelf`, `status` (`available`/`reserved`/`checked_out`) | Physical items on the shelf |
 | D4 | `loans` | `copy_id`, `user_id`, `checkout_date`, `due_date`, `return_date`, `renewals`, `status` (`active`/`overdue`/`returned`) | Circulation state of each copy |
@@ -240,7 +240,7 @@ flowchart TB
 
 | Flow element | Definition |
 |---|---|
-| Borrower ID | `users.username`, pattern `\d{4}-\d{5}` for students |
+| Borrower ID | `users.username`, pattern `\d{4}-\d{6}` for students (older 5-digit numbers still sign in) |
 | Accession | `copies.accession`, pattern `PDM-xxxxxx`, unique per physical copy |
 | Eligibility verdict | `(bool, message)` from `eligibility()` — account active, 0 overdue, < 5 active loans |
 | Due date | `checkout_date + loan_days` (default 3 days), shown in the **DUE DATE** column on *My loans* and in the *Book checked out* notice |
@@ -260,7 +260,7 @@ flowchart TB
 |---|---|---|
 | A0.1 | Launch `py library_system.py`. Login screen shows the maroon hero left, white form right: **Welcome back** | — |
 | A0.2 | Role tabs: `◈ Student` (default) · `◎ Staff` · `◉ Administrator` | Switching to Staff/Admin replaces the signup link with *"Staff and administrator accounts are issued by the library."* |
-| A0.3 | Field label **Student number**, hint `e.g. 2024-01842` | ID field label and hint change per role tab |
+| A0.3 | Field label **Student number**, hint `e.g. 2024-018423` | ID field label and hint change per role tab |
 | A0.4 | Enter password, click **→ Sign in as Student** (or press Enter) | Wrong ID/password → *"We could not match those credentials. Check your ID and password, then try again."* |
 | A0.5 | — | Wrong role tab → *"This account is registered as … — select the matching role tab."* |
 | A0.6 | Success → shell opens on **Library catalog** | `open_shell()` runs the overdue scan; if new notices exist, toast *"Library update — N new notification(s) for your account."* |
@@ -271,13 +271,13 @@ Accessed from the link **New student? Create an account** under the sign-in butt
 
 | Step | Field | Rule and error message |
 |---|---|---|
-| A1.1 | **Student number** (prefix `e.g. 2024-01842`) | Must match `\d{4}-\d{5}` → *"Student number should look like 2024-01842."* |
+| A1.1 | **Student number** (prefix `e.g. 2024-018423`) | Must match `\d{4}-\d{6}` → *"Student number should look like 2024-018423."* |
 | A1.2 | — | Must be unused → *"That student number is already registered - sign in instead."* |
 | A1.3 | **Full name** (placeholder `e.g. Juan D. Cruz`) | ≥ 3 chars, contains a space, not the placeholder → *"Enter your complete name (first and last)."* |
-| A1.4 | **Program** (dropdown) · **Year level** (1st–5th Year) | Both required → *"Select your program and year level."* |
+| A1.4 | **Program** (dropdown) · **Year level** (1st–4th Year) · **Section** (A/B/C/D, no default) | All required → *"Select your program and year level."* / *"Select your section (A, B, C or D)."* |
 | A1.5 | **Password** | ≥ 6 characters → *"Password must be at least 6 characters."* |
 | A1.6 | **Confirm password** | Must match → *"Passwords do not match."* |
-| A1.7 | Click **→ Create account** | Row inserted into `users` with `role='student'`, `status='active'`, `joined=today` |
+| A1.7 | Click **→ Create account** | Row inserted into `users` with `role='student'`, the chosen `program`, `year_level` and `section`, `status='active'`, `joined=today` |
 | A1.8 | — | Automatically signed in; toast **Account created** — *"Welcome, {first name}! Your library account is active."* |
 | A1.9 | **← Back to sign in** | Returns to the login screen at any time |
 
@@ -288,7 +288,7 @@ Accessed from the link **New student? Create an account** under the sign-in butt
 | A2.1 | Sidebar **Catalog ☰** | Screen *Library catalog* |
 | A2.2 | Type into **Title, author, subject, or ISBN** | Press Enter or click **Search catalog**; **Clear search** empties the query |
 | A2.3 | **Search in**: All fields / Title / Author / Subject / ISBN | Restricts the `LIKE` match to one column |
-| A2.4 | Left pane **Filter results** | Groups: **AVAILABILITY** (Available / Checked out / Reserved), **MATERIAL TYPE** (Book / Reference / Thesis), **SUBJECT** (top 6 subjects with counts), **Publication year** dropdown; **Reset** restores every filter and clears the query |
+| A2.4 | Left pane **Filter results** | Groups: **AVAILABILITY** (Available / Checked out / Reserved), **MATERIAL TYPE** (Book / Reference / Thesis), **SUBJECT** (top 6 subjects with counts — unchecking one hides it; subjects outside the top 6 are never filtered out), **Publication year** dropdown; **Reset** restores every filter and clears the query |
 | A2.5 | **Sort by**: Relevance / Title A-Z / Newest / Oldest | Re-orders the result list |
 | A2.6 | Each result row | Title, author, availability pill (`Available` / `Checked out` / `Reserved`), note (`4 of 6 copies`, `Due …`, `Held for pickup • 2 in queue`) and one action button: **Reserve** when copies are free, **Join waitlist** otherwise, or **In queue #n** / **Ready - pick up** if you already hold the reservation. Staff and admin see **View record** instead |
 
@@ -665,7 +665,8 @@ sequenceDiagram
 | Unlock path | Student complies with the SDO → admin sees it → **Cases → Mark acknowledged** → **Users → double-click** to unblock | `sdo_cases.status`, admin screens |
 | Case closure announced | Every closure writes one system-wide *"SDO case acknowledged"* notice (admin click **or** return of the book) | `announce_case_closed()` → `notify(db, None, …)` |
 | Overdue / blocked account | **Any** overdue item, or `users.status='blocked'` | `eligibility()` → *"n overdue item(s) - resolve with the librarian"* / *"Account is blocked"*; gates `reserve()`, `request_borrow()` and `checkout()` |
-| Student number format | `\d{4}-\d{5}` | `attempt_signup()` |
+| Student number format | `\d{4}-\d{6}` (older 5-digit numbers still sign in) | `attempt_signup()` |
+| Student section | Must be one of A, B, C, D (no default — must be picked) | `attempt_signup()` |
 | Password minimum | 6 characters | `attempt_signup()` |
 | Reservation uniqueness | one per student per title (`UNIQUE(book_id,user_id)`) | `reserve()`, `request_borrow()` |
 | Reminder window | 1 day before due, plus the due date itself | `run_overdue_scan()` |
@@ -697,7 +698,7 @@ Run once from a fresh launch (delete `library.db` first if you want the seeded d
 | # | Actor | Steps | Expected result |
 |---|---|---|---|
 | 1 | Anonymous | Start the app, stay on the **Student** tab, click **New student? Create an account** | Registration form appears with the same maroon hero |
-| 2 | Student | Enter `2026-00001`, `Juan D. Cruz`, a program, **2nd Year**, password `sample1` twice → **→ Create account** | Toast *"Account created — Welcome, Juan! Your library account is active."*; shell opens on the catalog |
+| 2 | Student | Enter `2026-000001`, `Juan D. Cruz`, a program, **2nd Year**, section **B**, password `sample1` twice → **→ Create account** | Toast *"Account created — Welcome, Juan! Your library account is active."*; shell opens on the catalog |
 | 3 | Student | Search a title whose copies are all out, click it, then **Join reservation waitlist** | Toast with the queue position; row appears under **Reservations** as `#1 Waiting` |
 | 3b | Student | Search a title with a free copy, click it, then **Borrow today** | Toast *"Sent to the library desk - collect your book today"*; the catalog row and *Book details* show **Borrow requested**; the copy is held (title pill **Reserved**) |
 | 3c | Student | On a **different** title with a free copy, click **Reserve** | Toast *"Ready for pickup by {today+3}"* — an instant hold, no queue; the row shows **Ready for pickup** / *Pick up by …* |
