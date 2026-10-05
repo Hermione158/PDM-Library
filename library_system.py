@@ -12,7 +12,7 @@ import sqlite3
 import hashlib
 import datetime as dt
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog, font as tkfont
+from tkinter import ttk, messagebox, font as tkfont
 
 APP_NAME = "PDM Library"
 SLOGAN = "Lending & Reservations"
@@ -587,36 +587,16 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 
-def migrate_db(db):
-    """Bring older library.db files up to date without losing data."""
-    cols = {r["name"] for r in db.all("PRAGMA table_info(users)")}
-    for col, ddl in (("restricted_reason", "TEXT DEFAULT ''"),
-                     ("restricted_by", "INTEGER"),
-                     ("restricted_at", "TEXT")):
-        if col not in cols:
-            db.run(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
-    for u in db.all("SELECT id FROM users WHERE status<>'active' AND "
-                    "COALESCE(restricted_reason,'')=''"):
-        late = db.scalar("SELECT COUNT(*) FROM loans WHERE user_id=? AND "
-                         "status='overdue'", (u["id"],))
-        db.run("UPDATE users SET restricted_reason=? WHERE id=?",
-               ("Unreturned or overdue books" if late
-                else "Restricted before reasons were recorded", u["id"]))
-
-
 def init_db(db):
     db.conn.executescript(SCHEMA)
     db.conn.commit()
-    migrate_db(db)
     for key, value in (("renew_window", RENEW_WINDOW), ("loan_days", LOAN_DAYS),
                        ("sdo_after", SDO_AFTER)):
         db.run("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
                (key, str(value)))
     if db.one("SELECT id FROM users LIMIT 1"):
-        purge_redundant_reservations(db)
         return
     seed_db(db)
-    purge_redundant_reservations(db)
 
 
 def seed_db(db):
@@ -709,8 +689,8 @@ def active_loan(db, copy_id):
 
 def my_loans(db, user_id):
     return db.all(
-        "SELECT l.*, c.accession, c.shelf, c.book_id, b.title, b.author, "
-        "b.call_no FROM loans l JOIN copies c ON c.id=l.copy_id "
+        "SELECT l.*, c.accession, c.shelf, b.title, b.author, b.call_no "
+        "FROM loans l JOIN copies c ON c.id=l.copy_id "
         "JOIN books b ON b.id=c.book_id "
         "WHERE l.user_id=? AND l.status IN ('active','overdue') "
         "ORDER BY l.due_date", (user_id,))
@@ -770,139 +750,12 @@ def log_tx(db, user_id, copy_id, tx_type, staff_id, status="Completed",
             tx_type, staff_id, status, note))
 
 
-RESTRICTION_REASONS = (
-    "Unreturned or overdue books",
-    "Lost or damaged library item",
-    "Pending Student Disciplinary Office case",
-    "Misuse of library privileges",
-    "Other (describe below)",
-)
-
-
-def account_restriction(db, user_id):
-    """Why this account is restricted, or None when it is in good standing."""
-    row = db.one("SELECT u.status, u.restricted_reason, u.restricted_at, "
-                 "a.name AS by_name FROM users u LEFT JOIN users a ON "
-                 "a.id=u.restricted_by WHERE u.id=?", (user_id,))
-    if not row or row["status"] == "active":
-        return None
-    why = (row["restricted_reason"] or "").strip() or "No reason recorded"
-    return why
-
-
-def restrict_account(db, target_id, admin, reason):
-    """Administrator action: suspend borrowing for a student or staff account."""
-    if not admin or admin["role"] != "admin":
-        return False, "Only administrators can restrict accounts"
-    target = user_by_id(db, target_id)
-    if not target:
-        return False, "Account not found"
-    if target["role"] == "admin":
-        return False, "Administrator accounts cannot be restricted"
-    if target["status"] != "active":
-        return False, f"{target['name']} is already restricted"
-    reason = (reason or "").strip()
-    if len(reason) < 3:
-        return False, "Give a reason for the restriction"
-    db.run("UPDATE users SET status='blocked', restricted_reason=?, "
-           "restricted_by=?, restricted_at=? WHERE id=?",
-           (reason, admin["id"], iso(today()), target_id))
-    log_tx(db, target_id, None, "Restriction", admin["id"], note=reason)
-    notify(db, target_id, "Account restricted",
-           f"Borrowing and reservations are suspended: {reason}. See the "
-           "library administrator to be reinstated.", "error",
-           f"restrict:{target_id}:{dt.datetime.now().isoformat()}")
-    return True, f"{target['name']} is now restricted"
-
-
-def reinstate_blockers(db, user_id):
-    """(hard, soft) problems to look at before lifting a restriction."""
-    hard, soft = [], []
-    overdue = db.scalar("SELECT COUNT(*) FROM loans WHERE user_id=? AND "
-                        "status='overdue'", (user_id,))
-    if overdue:
-        hard.append(f"{overdue} overdue item(s) are still unreturned.")
-    pending = db.scalar("SELECT COUNT(*) FROM sdo_cases WHERE user_id=? AND "
-                        "status='pending'", (user_id,))
-    if pending:
-        soft.append(f"{pending} SDO case(s) are still pending.")
-    return hard, soft
-
-
-def reinstate_account(db, target_id, admin, override_soft=False):
-    if not admin or admin["role"] != "admin":
-        return False, "Only administrators can reinstate accounts"
-    target = user_by_id(db, target_id)
-    if not target:
-        return False, "Account not found"
-    if target["status"] == "active":
-        return False, f"{target['name']} is not restricted"
-    hard, soft = reinstate_blockers(db, target_id)
-    if hard:
-        return False, " ".join(hard) + " Return them first."
-    if soft and not override_soft:
-        return False, " ".join(soft)
-    db.run("UPDATE users SET status='active', restricted_reason='', "
-           "restricted_by=NULL, restricted_at=NULL WHERE id=?", (target_id,))
-    log_tx(db, target_id, None, "Reinstated", admin["id"],
-           note="Restriction lifted")
-    notify(db, target_id, "Account reinstated",
-           "Your borrowing privileges have been restored.", "info",
-           f"reinstate:{target_id}:{dt.datetime.now().isoformat()}")
-    return True, f"{target['name']} has been reinstated"
-
-
-def loan_of_title(db, book_id, user_id):
-    """The user's open loan on any copy of this title, if there is one."""
-    return db.one(
-        "SELECT l.* FROM loans l JOIN copies c ON c.id=l.copy_id WHERE "
-        "c.book_id=? AND l.user_id=? AND l.status IN ('active','overdue') "
-        "LIMIT 1", (book_id, user_id))
-
-
-def redundancy(db, book_id, user_id, subject="You"):
-    """Reason this user must not borrow/reserve the title again, else None."""
-    have = "have" if subject == "You" else "has"
-    loan = loan_of_title(db, book_id, user_id)
-    if loan:
-        return (f"{subject} already {have} this title on loan "
-                f"(due {fmt_date(loan['due_date'])}). Return it before "
-                "borrowing or reserving another copy.")
-    res = reservation_for(db, book_id, user_id)
-    if res:
-        if res["status"] == "requested":
-            return (f"{subject} already {have} a borrow request for this "
-                    "title - collect it at the library desk.")
-        if res["status"] == "ready":
-            return (f"{subject} already {have} a copy held for pickup until "
-                    f"{fmt_date(res['ready_at'])}.")
-        return (f"{subject} already {have} a place in the queue for this "
-                f"title (#{res['position']}).")
-    return None
-
-
-def purge_redundant_reservations(db):
-    """Drop waitlist places for titles the student already has on loan."""
-    rows = db.all(
-        "SELECT r.id, r.book_id, r.user_id, b.title FROM reservations r "
-        "JOIN books b ON b.id=r.book_id WHERE r.status='waiting' AND EXISTS "
-        "(SELECT 1 FROM loans l JOIN copies c ON c.id=l.copy_id WHERE "
-        "c.book_id=r.book_id AND l.user_id=r.user_id AND l.status IN "
-        "('active','overdue'))")
-    for r in rows:
-        db.run("DELETE FROM reservations WHERE id=?", (r["id"],))
-        requeue(db, r["book_id"])
-        notify(db, r["user_id"], "Waitlist place removed",
-               f"You already have {r['title']} on loan, so your duplicate "
-               "queue place was removed.", "info", f"dupres:{r['id']}")
-
-
 def eligibility(db, user):
     if not user:
         return False, "Account not found"
-    why = account_restriction(db, user["id"])
-    if why:
-        return False, f"Account restricted - {why}"
+    if db.scalar("SELECT status FROM users WHERE id=?", (user["id"],),
+                 user["status"]) != "active":
+        return False, "Account is blocked"
     loans = db.scalar("SELECT COUNT(*) FROM loans WHERE user_id=? AND status IN "
                       "('active','overdue')", (user["id"],))
     overdue = db.scalar("SELECT COUNT(*) FROM loans WHERE user_id=? AND "
@@ -924,12 +777,6 @@ def checkout(db, user, accessions, staff):
             continue
         if copy["status"] == "checked_out":
             results.append((accession, False, "Already checked out"))
-            continue
-        dup = loan_of_title(db, copy["book_id"], user["id"])
-        if dup:
-            results.append((accession, False,
-                            f"{user['name']} already has this title on loan "
-                            f"(due {fmt_date(dup['due_date'])})"))
             continue
         if copy["status"] == "reserved":
             mine = db.one("SELECT * FROM reservations WHERE book_id=? AND "
@@ -1074,9 +921,6 @@ def renew_loan(db, loan_id, staff):
     loan = db.one("SELECT * FROM loans WHERE id=?", (loan_id,))
     if not loan:
         return False, "Loan not found"
-    why = account_restriction(db, loan["user_id"])
-    if why:
-        return False, f"Account restricted - {why}"
     max_r = setting(db, "max_renewals", MAX_RENEWALS)
     if loan["renewals"] >= max_r:
         return False, f"Renewal limit reached ({max_r})"
@@ -1109,9 +953,8 @@ def reserve(db, book_id, user):
     book = db.one("SELECT * FROM books WHERE id=?", (book_id,))
     if not book:
         return False, "Title not found"
-    dup = redundancy(db, book_id, user["id"])
-    if dup:
-        return False, dup
+    if reservation_for(db, book_id, user["id"]):
+        return False, "You already hold a reservation for this title"
     ok, reason = eligibility(db, user)
     if not ok:
         return False, reason
@@ -1147,9 +990,8 @@ def request_borrow(db, book_id, user):
     book = db.one("SELECT * FROM books WHERE id=?", (book_id,))
     if not book:
         return False, "Title not found"
-    dup = redundancy(db, book_id, user["id"])
-    if dup:
-        return False, dup
+    if reservation_for(db, book_id, user["id"]):
+        return False, "You already hold a request for this title"
     ok, reason = eligibility(db, user)
     if not ok:
         return False, reason
@@ -1242,11 +1084,8 @@ def run_overdue_scan(db, silent=True):
                            "Disciplinary Office.", "error",
                            f"sdocase:{loan['id']}")
                     new_alerts.append(("SDO escalation", loan["name"]))
-                db.run("UPDATE users SET status='blocked', "
-                       "restricted_reason=?, restricted_by=NULL, "
-                       "restricted_at=? WHERE id=? AND status='active'",
-                       (f"Auto: {loan['title']} is {late} day(s) overdue",
-                        iso(today()), loan["user_id"]))
+                db.run("UPDATE users SET status='blocked' WHERE id=? AND "
+                       "status='active'", (loan["user_id"],))
                 if notify(db, loan["user_id"], "Account restricted",
                           f"{loan['title']} is {late} day(s) overdue, so "
                           f"borrowing is suspended. Return the book, comply "
@@ -1327,113 +1166,6 @@ def tx_time(iso_ts):
         return iso_ts
 def acc(book_id, i=0):
     return f"PDM-{1000 + book_id * 40 + i:06d}"
-
-
-MAX_COPIES = 40            # accession numbers are reserved 40 per title
-MATERIAL_TYPES = ("Book", "Reference", "Thesis")
-
-
-def clean_isbn(raw):
-    return re.sub(r"[\s-]", "", (raw or "")).upper()
-
-
-def find_duplicate_book(db, title, author, isbn):
-    """An existing record matching the ISBN, or the same title and author."""
-    digits = clean_isbn(isbn)
-    if digits:
-        for row in db.all("SELECT * FROM books WHERE isbn<>''"):
-            if clean_isbn(row["isbn"]) == digits:
-                return row
-    return db.one("SELECT * FROM books WHERE LOWER(title)=LOWER(?) AND "
-                  "LOWER(author)=LOWER(?)", (title.strip(), author.strip()))
-
-
-def _new_accessions(db, book_id, count):
-    taken = {r[0] for r in db.all("SELECT accession FROM copies")}
-    free = [acc(book_id, i) for i in range(MAX_COPIES)
-            if acc(book_id, i) not in taken]
-    return free[:count] if len(free) >= count else None
-
-
-def add_copies(db, book_id, count, shelf, admin):
-    """Administrator action: shelve more copies of an existing title."""
-    if not admin or admin["role"] != "admin":
-        return False, "Only administrators can add to the catalog"
-    book = db.one("SELECT * FROM books WHERE id=?", (book_id,))
-    if not book:
-        return False, "Title not found"
-    if count < 1:
-        return False, "Add at least one copy"
-    shelf = (shelf or "").strip()
-    if not shelf:
-        row = db.one("SELECT shelf FROM copies WHERE book_id=? LIMIT 1",
-                     (book_id,))
-        shelf = row[0] if row else ""
-    if not shelf:
-        return False, "Enter the shelf location"
-    numbers = _new_accessions(db, book_id, count)
-    if numbers is None:
-        have = db.scalar("SELECT COUNT(*) FROM copies WHERE book_id=?",
-                         (book_id,))
-        return False, (f"A title can hold at most {MAX_COPIES} copies "
-                       f"({have} already on the shelf)")
-    first = None
-    for number in numbers:
-        cid = db.run("INSERT INTO copies(book_id,accession,shelf,status) "
-                     "VALUES(?,?,?,?)", (book_id, number, shelf, "available"))
-        first = first or cid
-    log_tx(db, None, first, "Catalog add", admin["id"],
-           note=f"{count} copy(s) of {book['title']}")
-    return True, f"{count} copy(s) added to {book['title']}"
-
-
-def add_book(db, data, count, shelf, admin):
-    """Administrator action: create a new catalog record plus its copies.
-
-    Returns (ok, message, book_id).
-    """
-    if not admin or admin["role"] != "admin":
-        return False, "Only administrators can add to the catalog", None
-    title = (data.get("title") or "").strip()
-    author = (data.get("author") or "").strip()
-    category = (data.get("category") or "").strip()
-    shelf = (shelf or "").strip()
-    if len(title) < 2:
-        return False, "A title is required.", None
-    if not author:
-        return False, "An author is required.", None
-    if not category:
-        return False, "Choose or type a category.", None
-    if not shelf:
-        return False, "Enter the shelf location (for example QA-14).", None
-    if not 1 <= count <= MAX_COPIES:
-        return False, f"Copies must be between 1 and {MAX_COPIES}.", None
-    year = (data.get("year") or "").strip()
-    if year:
-        if not year.isdigit() or not 1450 <= int(year) <= today().year + 1:
-            return False, (f"Publication year must be between 1450 and "
-                           f"{today().year + 1}."), None
-    isbn = (data.get("isbn") or "").strip()
-    if isbn and not re.fullmatch(r"\d{9}[\dX]|\d{13}", clean_isbn(isbn)):
-        return False, "ISBN must have 10 or 13 digits.", None
-    material = data.get("material_type") or "Book"
-    if material not in MATERIAL_TYPES:
-        material = "Book"
-    book_id = db.run(
-        "INSERT INTO books(title,author,subject,category,publisher,edition,"
-        "year,isbn,call_no,material_type,description) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        (title, author, (data.get("subject") or "").strip() or category,
-         category, (data.get("publisher") or "").strip(),
-         (data.get("edition") or "").strip(), int(year) if year else None,
-         isbn, (data.get("call_no") or "").strip() or "-", material,
-         (data.get("description") or "").strip()
-         or "Added through the administration inventory."))
-    ok, msg = add_copies(db, book_id, count, shelf, admin)
-    if not ok:
-        db.run("DELETE FROM books WHERE id=?", (book_id,))
-        return False, msg, None
-    return True, f"{title} added with {count} copy(s).", book_id
 
 
 def seed_activity(db):
@@ -1815,11 +1547,6 @@ class App(tk.Tk):
                      f"{ROLE_LABEL[user['role']]} - "
                      f"select the matching role tab.")
             return
-        if user["status"] != "active" and user["role"] == "staff":
-            self.login_error.configure(
-                text="This staff account is restricted. See the library "
-                     "administrator to have it reinstated.")
-            return
         self.login_error.configure(text="")
         self.open_shell(user)
 
@@ -2118,41 +1845,9 @@ class Shell(tk.Frame):
         self.bell = self.make_bell(self.head_actions)
         self.bell.pack(side="right")
 
-        self.banner = tk.Frame(main, bg=CREAM)
         self.body = tk.Frame(main, bg=CREAM)
         self.body.pack(fill="both", expand=True, padx=34, pady=(8, 24))
         self.screens = {}
-
-    def refresh_banner(self):
-        """Students see why borrowing is paused, on every screen."""
-        for child in self.banner.winfo_children():
-            child.destroy()
-        self.banner.pack_forget()
-        if self.user["role"] != "student":
-            return
-        why = account_restriction(self.db, self.user["id"])
-        overdue = self.db.scalar(
-            "SELECT COUNT(*) FROM loans WHERE user_id=? AND status='overdue'",
-            (self.user["id"],))
-        if why:
-            text = (f"Your account is restricted - {why}. Borrowing, "
-                    "reserving and renewing are paused until the "
-                    "administrator reinstates you.")
-        elif overdue:
-            text = (f"{overdue} overdue item(s) - return them to the desk to "
-                    "keep borrowing.")
-        else:
-            return
-        box = tk.Frame(self.banner, bg=RED_BG, highlightthickness=1,
-                       highlightbackground="#F5C2C0")
-        box.pack(fill="x")
-        tk.Label(box, text="!", bg=RED_BG, fg=RED_FG,
-                 font=(BODY, 12, "bold")).pack(side="left", padx=(14, 8),
-                                               pady=10)
-        tk.Label(box, text=text, bg=RED_BG, fg=RED_FG, font=(BODY, 10),
-                 wraplength=840, justify="left", anchor="w").pack(
-            side="left", fill="x", expand=True, padx=(0, 14), pady=10)
-        self.banner.pack(fill="x", padx=34, pady=(4, 0), before=self.body)
 
     def _key_of(self, row):
         for key, (r, _) in self.nav_refs.items():
@@ -2273,7 +1968,6 @@ class Shell(tk.Frame):
         title, sub = TITLES.get(key, (APP_NAME, SLOGAN))
         self.title_lbl.configure(text=title)
         self.sub_lbl.configure(text=sub)
-        self.refresh_banner()
         builder = SCREENS.get(key)
         if builder:
             builder(self)
@@ -2508,15 +2202,9 @@ class CatalogScreen(tk.Frame):
     def refresh(self):
         self.query.set(self.entry.get())
         self.mine = {}
-        self.loaned = {}
-        self.restricted = None
         if not self.readonly:
             for res in my_reservations(self.db, self.shell.user["id"]):
                 self.mine[res["bid"]] = res
-            for loan in my_loans(self.db, self.shell.user["id"]):
-                self.loaned.setdefault(loan["book_id"], loan)
-            self.restricted = account_restriction(
-                self.db, self.shell.user["id"])
         rows = self.all_rows()
         self.build_filters(rows)
         rows = self.filtered(rows)
@@ -2584,11 +2272,6 @@ class CatalogScreen(tk.Frame):
         if self.readonly:
             button(right, "View record", lambda r=row: self.open(r),
                    "ghost").pack(anchor="e")
-        elif row["id"] in self.loaned:
-            loan = self.loaned[row["id"]]
-            button(right, f"On loan - due {fmt_date(loan['due_date'])}",
-                   lambda: self.shell.navigate("loans"), "ghost").pack(
-                anchor="e")
         elif mine:
             label = {"requested": "Borrow requested",
                      "ready": "Ready - pick up"}.get(
@@ -2596,21 +2279,13 @@ class CatalogScreen(tk.Frame):
             button(right, label, lambda r=row: self.open(r),
                    "ghost").pack(anchor="e")
         elif status == "Available":
-            b1 = button(right, "Borrow today",
-                        lambda r=row: self.do_borrow(r), "primary")
-            b1.pack(anchor="e")
-            b2 = button(right, "Reserve", lambda r=row: self.do_reserve(r),
-                        "ghost")
-            b2.pack(anchor="e", pady=(6, 0))
-            if self.restricted:
-                for b in (b1, b2):
-                    b.configure(state="disabled", bg=GREY_BG, fg=GREY_FG)
+            button(right, "Borrow today", lambda r=row: self.do_borrow(r),
+                   "primary").pack(anchor="e")
+            button(right, "Reserve", lambda r=row: self.do_reserve(r),
+                   "ghost").pack(anchor="e", pady=(6, 0))
         else:
-            b = button(right, "Join waitlist",
-                       lambda r=row: self.do_reserve(r), "ghost")
-            b.pack(anchor="e")
-            if self.restricted:
-                b.configure(state="disabled", bg=GREY_BG, fg=GREY_FG)
+            button(right, "Join waitlist", lambda r=row: self.do_reserve(r),
+                   "ghost").pack(anchor="e")
 
         for wdg in (title_lbl, info):
             wdg.bind("<Button-1>", lambda e, r=row: self.open(r))
@@ -2666,8 +2341,6 @@ class DetailsScreen(tk.Frame):
         queue = queue_for(self.db, book_id)
         mine = (reservation_for(self.db, book_id, shell.user["id"])
                 if shell.user["role"] == "student" else None)
-        on_loan = (loan_of_title(self.db, book_id, shell.user["id"])
-                   if shell.user["role"] == "student" else None)
 
         scroll = ScrollFrame(self, bg=CREAM)
         scroll.pack(fill="both", expand=True)
@@ -2808,16 +2481,7 @@ class DetailsScreen(tk.Frame):
                                       weight="bold")).pack(side="right")
 
         if self.shell.user["role"] == "student":
-            if on_loan:
-                button(pane, f"On loan - due {fmt_date(on_loan['due_date'])}",
-                       lambda: shell.navigate("loans"), "ghost",
-                       icon="▤").pack(fill="x")
-                tk.Label(pane, text="You already have a copy of this title, "
-                         "so it cannot be borrowed or reserved again.",
-                         bg=WHITE, fg=MUTED, font=(BODY, 9), wraplength=290,
-                         justify="left", anchor="w").pack(fill="x",
-                                                          pady=(8, 0))
-            elif mine:
+            if mine:
                 label = {"requested": "Borrow requested",
                          "ready": "Pick up by " + fmt_date(mine["ready_at"])
                          }.get(mine["status"], f"In queue #{mine['position']}")
@@ -2835,10 +2499,6 @@ class DetailsScreen(tk.Frame):
                 if not ok:
                     for b in (b1, b2):
                         b.configure(state="disabled", bg=GREY_BG, fg=GREY_FG)
-                    tk.Label(pane, text=reason, bg=RED_BG, fg=RED_FG,
-                             font=(BODY, 9), wraplength=290, justify="left",
-                             anchor="w", padx=10, pady=6).pack(
-                        fill="x", pady=(10, 0))
             else:
                 ok, reason = eligibility(self.db, shell.user)
                 b = button(pane, "Join reservation waitlist",
@@ -2846,10 +2506,6 @@ class DetailsScreen(tk.Frame):
                 b.pack(fill="x")
                 if not ok:
                     b.configure(state="disabled", bg=GREY_BG, fg=GREY_FG)
-                    tk.Label(pane, text=reason, bg=RED_BG, fg=RED_FG,
-                             font=(BODY, 9), wraplength=290, justify="left",
-                             anchor="w", padx=10, pady=6).pack(
-                        fill="x", pady=(10, 0))
             tk.Label(pane, text="Notify me by PDM email and app  ›", bg=WHITE,
                      fg=MUTED, font=(BODY, 9), anchor="w").pack(
                 fill="x", pady=(12, 0))
@@ -3482,19 +3138,6 @@ class CirculationScreen(tk.Frame):
             self.render()
             return
         user = self.db.one("SELECT * FROM users WHERE id=?", (res["user_id"],))
-        dup = loan_of_title(self.db, res["book_id"], user["id"])
-        if dup:
-            if messagebox.askyesno(
-                    "Requests",
-                    f"{user['name']} already has this title on loan (due "
-                    f"{fmt_date(dup['due_date'])}).\n\nCancel the redundant "
-                    "request and release the held copy?", parent=self):
-                self.db.run("DELETE FROM reservations WHERE id=?", (res_id,))
-                release_hold(self.db, res["book_id"])
-                Toast(self.shell.app, "Request cancelled",
-                      f"{user['name']} already holds this title.", "info")
-            self.render()
-            return
         copy = held_copy(self.db, res["book_id"])
         if not copy:
             messagebox.showwarning(
@@ -3711,8 +3354,7 @@ class TransactionsScreen(tk.Frame):
             side="left")
         cb = ttk.Combobox(inner, textvariable=self.kind, width=14,
                           state="readonly",
-                          values=["All", "Checkout", "Return", "Renewal",
-                                  "Restriction", "Reinstated", "Catalog add"])
+                          values=["All", "Checkout", "Return", "Renewal"])
         cb.pack(side="left", padx=10)
         cb.bind("<<ComboboxSelected>>", lambda e: self.after(1, self.load))
         button(inner, "Refresh", self.load, "ghost").pack(side="right")
@@ -3949,18 +3591,14 @@ class InventoryScreen(tk.Frame):
             side="left", padx=(10, 4))
         e = entry(search)
         e.pack(side="left", fill="x", expand=True, ipady=3)
-        e.bind("<KeyRelease>", lambda ev: self.after(
-            1, lambda: (self.query.set(e.get()), self.load())))
+        e.bind("<KeyRelease>", lambda ev: self.after(1, self.load))
         cats = ["All categories"] + sorted({
             r["category"] for r in self.db.all("SELECT DISTINCT category FROM "
                                                "books")})
-        self.cat_box = ttk.Combobox(inner, textvariable=self.category,
-                                    width=18, state="readonly", values=cats)
-        self.cat_box.pack(side="left", padx=12)
-        self.cat_box.bind("<<ComboboxSelected>>",
-                          lambda ev: self.after(1, self.load))
-        button(inner, "Add copies", self.add_copies_to_selected,
-               "ghost").pack(side="left", padx=(0, 8))
+        cb = ttk.Combobox(inner, textvariable=self.category, width=18,
+                          state="readonly", values=cats)
+        cb.pack(side="left", padx=12)
+        cb.bind("<<ComboboxSelected>>", lambda ev: self.after(1, self.load))
         button(inner, "Add book", self.add_book, "primary", icon="+").pack(
             side="left")
 
@@ -3993,7 +3631,7 @@ class InventoryScreen(tk.Frame):
                 continue
             if cat != "All categories" and row["category"] != cat:
                 continue
-            self.tv.insert("", "end", iid=str(row["id"]), values=(
+            self.tv.insert("", "end", values=(
                 acc(row["id"], 0), row["title"], row["author"],
                 row["category"], self.shelf_of(row["id"]),
                 f"{row['avail']} / {row['total']}",
@@ -4009,217 +3647,73 @@ class InventoryScreen(tk.Frame):
                           (book_id,))
         return row[0] if row else "-"
 
-    def refresh_categories(self):
-        cats = ["All categories"] + sorted({
-            r["category"] for r in self.db.all(
-                "SELECT DISTINCT category FROM books")})
-        self.cat_box.configure(values=cats)
-
-    def add_copies_to_selected(self):
-        sel = self.tv.selection()
-        if not sel:
-            messagebox.showinfo("Add copies", "Select a title in the list "
-                                "first.", parent=self)
-            return
-        book = self.db.one("SELECT * FROM books WHERE id=?", (int(sel[0]),))
-        self.ask_copies(book)
-
-    def ask_copies(self, book):
-        have = self.db.scalar("SELECT COUNT(*) FROM copies WHERE book_id=?",
-                              (book["id"],))
-        room = MAX_COPIES - have
-        if room < 1:
-            messagebox.showwarning("Add copies", f"{book['title']} already "
-                                   f"has the maximum of {MAX_COPIES} copies.",
-                                   parent=self)
-            return
-        n = simpledialog.askinteger(
-            "Add copies", f"How many copies of\n{book['title']}\nto add? "
-            f"(1-{room})", parent=self, minvalue=1, maxvalue=room,
-            initialvalue=1)
-        if not n:
-            return
-        ok, msg = add_copies(self.db, book["id"], n, "", self.shell.user)
-        if ok:
-            Toast(self.shell.app, "Catalog updated", msg, "info")
-            self.load()
-        else:
-            messagebox.showwarning("Add copies", msg, parent=self)
-
     def add_book(self):
         win = tk.Toplevel(self)
         win.title("Add book")
         win.configure(bg=WHITE)
-        win.geometry("700x690")
+        win.geometry("460x560")
         win.transient(self.winfo_toplevel())
         form = tk.Frame(win, bg=WHITE)
-        form.pack(fill="both", expand=True, padx=26, pady=20)
+        form.pack(fill="both", expand=True, padx=26, pady=22)
         tk.Label(form, text="Add to the catalog", bg=WHITE, fg=INK,
                  font=tkfont.Font(family=HEAD, size=18, weight="bold")).pack(
-            anchor="w", pady=(0, 2))
-        tk.Label(form, text="Fields marked * are required.", bg=WHITE,
-                 fg=MUTED, font=(BODY, 9)).pack(anchor="w", pady=(0, 10))
-        grid = tk.Frame(form, bg=WHITE)
-        grid.pack(fill="x")
-        grid.columnconfigure(0, weight=1, uniform="c")
-        grid.columnconfigure(1, weight=1, uniform="c")
-        widgets = {}
-        categories = sorted({r["category"] for r in self.db.all(
-            "SELECT DISTINCT category FROM books")})
-
-        def cell(key, label, row, col, span=1, kind="entry", values=()):
-            box = tk.Frame(grid, bg=WHITE)
-            box.grid(row=row, column=col, columnspan=span, sticky="ew",
-                     padx=(0 if col == 0 else 8, 8 if col == 0 and span == 1
-                           else 0), pady=(0, 8))
-            tk.Label(box, text=label, bg=WHITE, fg=INK,
-                     font=(BODY, 9, "bold")).pack(anchor="w")
-            if kind == "entry":
-                frame = tk.Frame(box, bg=WHITE, highlightthickness=1,
-                                 highlightbackground=LINE)
-                frame.pack(fill="x", pady=(3, 0))
-                w = entry(frame)
-                w.pack(fill="x", ipady=2)
-            else:
-                w = ttk.Combobox(box, values=list(values),
-                                 state="readonly" if kind == "fixed"
-                                 else "normal")
-                w.pack(fill="x", pady=(3, 0), ipady=3)
-            widgets[key] = w
-
-        cell("title", "Title *", 0, 0, span=2)
-        cell("author", "Author *", 1, 0)
-        cell("category", "Category *", 1, 1, kind="combo", values=categories)
-        cell("subject", "Subject", 2, 0)
-        cell("material_type", "Material type", 2, 1, kind="fixed",
-             values=MATERIAL_TYPES)
-        widgets["material_type"].set("Book")
-        cell("publisher", "Publisher", 3, 0)
-        cell("edition", "Edition", 3, 1)
-        cell("year", "Publication year", 4, 0)
-        cell("isbn", "ISBN (10 or 13 digits)", 4, 1)
-        cell("call_no", "Call number", 5, 0)
-        cell("shelf", "Shelf location * (e.g. QA-14)", 5, 1)
-        cell("copies", "Number of copies *", 6, 0)
-        widgets["copies"].insert(0, "1")
-        tk.Label(form, text="Description", bg=WHITE, fg=INK,
-                 font=(BODY, 9, "bold")).pack(anchor="w", pady=(2, 0))
-        desc = tk.Text(form, height=3, wrap="word", relief="flat",
-                       highlightthickness=1, highlightbackground=LINE,
-                       highlightcolor=MAROON, font=(BODY, 10), bd=6)
-        desc.pack(fill="x", pady=(3, 8))
-        error = tk.Label(form, text="", bg=WHITE, fg=RED_FG, font=(BODY, 9),
-                         anchor="w", wraplength=620, justify="left")
-        error.pack(fill="x", pady=(0, 8))
-
-        def values():
-            data = {k: w.get().strip() for k, w in widgets.items()}
-            data["description"] = desc.get("1.0", "end").strip()
-            return data
+            anchor="w", pady=(0, 16))
+        entries = {}
+        for key, label in (("title", "Title"), ("author", "Author"),
+                           ("subject", "Subject"), ("category", "Category"),
+                           ("publisher", "Publisher"), ("edition", "Edition"),
+                           ("year", "Publication year"), ("isbn", "ISBN"),
+                           ("call_no", "Call number"),
+                           ("shelf", "Shelf (e.g. QA-14)")):
+            tk.Label(form, text=label, bg=WHITE, fg=INK, font=(BODY, 9,
+                     "bold")).pack(anchor="w")
+            box = tk.Frame(form, bg=WHITE, highlightthickness=1,
+                           highlightbackground=LINE)
+            box.pack(fill="x", pady=(4, 10))
+            ent = entry(box)
+            ent.pack(fill="x", ipady=3)
+            entries[key] = ent
+        copies_var = tk.StringVar(value="1")
+        tk.Label(form, text="Number of copies", bg=WHITE, fg=INK,
+                 font=(BODY, 9, "bold")).pack(anchor="w")
+        tk.Entry(form, textvariable=copies_var, bg=WHITE, fg=INK,
+                 relief="flat", highlightthickness=1, highlightbackground=LINE,
+                 font=(BODY, 11), bd=6).pack(fill="x", pady=(4, 16))
 
         def save():
-            data = values()
-            raw = data.pop("copies")
-            if not raw.isdigit() or int(raw) < 1:
-                error.configure(text="Number of copies must be a whole "
-                                     "number of at least 1.")
+            title = entries["title"].get().strip()
+            if not title:
+                messagebox.showwarning("Add book", "A title is required.",
+                                       parent=win)
                 return
-            count, shelf = int(raw), data.pop("shelf")
-            existing = None
-            if data["title"] and data["author"]:
-                existing = find_duplicate_book(
-                    self.db, data["title"], data["author"], data["isbn"])
-            if existing:
-                if messagebox.askyesno(
-                        "Already in the catalog",
-                        f"'{existing['title']}' by {existing['author']} is "
-                        "already catalogued.\n\nAdd the copies to that "
-                        "record instead of creating a duplicate?",
-                        parent=win):
-                    ok, msg = add_copies(self.db, existing["id"], count,
-                                         shelf, self.shell.user)
-                    if not ok:
-                        error.configure(text=msg)
-                        return
-                    Toast(self.shell.app, "Catalog updated", msg, "info")
-                    win.destroy()
-                    self.load()
-                return
-            ok, msg, _ = add_book(self.db, data, count, shelf,
-                                  self.shell.user)
-            if not ok:
-                error.configure(text=msg)
-                return
-            Toast(self.shell.app, "Catalog updated", msg, "info")
+            year = entries["year"].get().strip()
+            book_id = self.db.run(
+                "INSERT INTO books(title,author,subject,category,publisher,"
+                "edition,year,isbn,call_no,material_type,description) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (title, entries["author"].get().strip() or "Unknown",
+                 entries["subject"].get().strip() or "General",
+                 entries["category"].get().strip() or "General",
+                 entries["publisher"].get().strip(),
+                 entries["edition"].get().strip(),
+                 int(year) if year.isdigit() else None,
+                 entries["isbn"].get().strip(),
+                 entries["call_no"].get().strip() or "-",
+                 "Book", "Added through the administration inventory."))
+            count = max(1, int(copies_var.get() or "1")
+                        if copies_var.get().strip().isdigit() else 1)
+            shelf = entries["shelf"].get().strip() or "STK-01"
+            for i in range(count):
+                self.db.run("INSERT INTO copies(book_id,accession,shelf,status) "
+                            "VALUES(?,?,?,?)",
+                            (book_id, f"PDM-{1000 + book_id * 40 + i:06d}",
+                             shelf, "available"))
+            Toast(self.shell.app, "Catalog updated",
+                  f"{title} added with {count} copy(s).", "info")
             win.destroy()
-            self.refresh_categories()
             self.load()
 
-        row = tk.Frame(form, bg=WHITE)
-        row.pack(fill="x")
-        button(row, "Cancel", win.destroy, "quiet").pack(side="right")
-        button(row, "Save to catalog", save, "primary").pack(
-            side="right", padx=(0, 10))
-        win.grab_set()
-
-
-class RestrictDialog(tk.Toplevel):
-    """Ask the administrator why an account is being restricted."""
-
-    def __init__(self, parent, user, on_confirm):
-        super().__init__(parent)
-        self.title("Restrict account")
-        self.configure(bg=WHITE)
-        self.geometry("460x420")
-        self.transient(parent.winfo_toplevel())
-        self.on_confirm = on_confirm
-        form = tk.Frame(self, bg=WHITE)
-        form.pack(fill="both", expand=True, padx=26, pady=22)
-        tk.Label(form, text="Restrict account", bg=WHITE, fg=INK,
-                 font=tkfont.Font(family=HEAD, size=18, weight="bold")).pack(
-            anchor="w")
-        tk.Label(form, text=f"{user['name']}  ({user['username']})",
-                 bg=WHITE, fg=MUTED, font=(BODY, 10)).pack(anchor="w",
-                                                           pady=(2, 14))
-        tk.Label(form, text="Reason", bg=WHITE, fg=INK,
-                 font=(BODY, 9, "bold")).pack(anchor="w")
-        self.reason = tk.StringVar(value=RESTRICTION_REASONS[0])
-        ttk.Combobox(form, textvariable=self.reason, state="readonly",
-                     values=RESTRICTION_REASONS).pack(fill="x", pady=(4, 12))
-        tk.Label(form, text="Details (shown to the student)", bg=WHITE,
-                 fg=INK, font=(BODY, 9, "bold")).pack(anchor="w")
-        self.note = tk.Text(form, height=4, wrap="word", relief="flat",
-                            highlightthickness=1, highlightbackground=LINE,
-                            highlightcolor=MAROON, font=(BODY, 10), bd=6)
-        self.note.pack(fill="x", pady=(4, 8))
-        self.error = tk.Label(form, text="", bg=WHITE, fg=RED_FG,
-                              font=(BODY, 9), anchor="w")
-        self.error.pack(fill="x")
-        tk.Label(form, text="Borrowing, reserving and renewing stop "
-                 "immediately. Existing loans stay due.", bg=GOLD_SOFT,
-                 fg="#8A6A15", font=(BODY, 9), wraplength=390,
-                 justify="left", padx=10, pady=8, anchor="w").pack(
-            fill="x", pady=(4, 14))
-        row = tk.Frame(form, bg=WHITE)
-        row.pack(fill="x")
-        button(row, "Cancel", self.destroy, "quiet").pack(side="right")
-        button(row, "Restrict account", self.confirm, "danger").pack(
-            side="right", padx=(0, 10))
-        self.grab_set()
-
-    def confirm(self):
-        reason = self.reason.get()
-        note = self.note.get("1.0", "end").strip()
-        if reason.startswith("Other"):
-            if len(note) < 3:
-                self.error.configure(text="Describe the reason for "
-                                          "'Other'.")
-                return
-            text = note
-        else:
-            text = f"{reason}: {note}" if note else reason
-        self.destroy()
-        self.on_confirm(text)
+        button(form, "Save to catalog", save, "primary").pack(fill="x")
 
 
 class UsersScreen(tk.Frame):
@@ -4227,163 +3721,57 @@ class UsersScreen(tk.Frame):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
         self.db = shell.db
-        self.query = tk.StringVar()
-        self.role = tk.StringVar(value="All roles")
-        self.state = tk.StringVar(value="All accounts")
         self.pack(fill="both", expand=True)
-
-        bar = tk.Frame(self, bg=WHITE, highlightthickness=1,
-                       highlightbackground=LINE)
-        bar.pack(fill="x")
-        inner = tk.Frame(bar, bg=WHITE)
-        inner.pack(fill="x", padx=18, pady=14)
-        search = tk.Frame(inner, bg=WHITE, highlightthickness=1,
-                          highlightbackground=LINE)
-        search.pack(side="left", fill="x", expand=True)
-        tk.Label(search, text="⌕", bg=WHITE, fg=MUTED, font=(BODY, 11)).pack(
-            side="left", padx=(10, 4))
-        e = entry(search)
-        e.pack(side="left", fill="x", expand=True, ipady=3)
-        e.bind("<KeyRelease>", lambda ev: self.after(
-            1, lambda: (self.query.set(e.get()), self.load())))
-        for var, vals, width in (
-                (self.role, ["All roles", "Student", "Staff", "Admin"], 12),
-                (self.state, ["All accounts", "Active", "Restricted"], 14)):
-            cb = ttk.Combobox(inner, textvariable=var, width=width,
-                              state="readonly", values=vals)
-            cb.pack(side="left", padx=(12, 0))
-            cb.bind("<<ComboboxSelected>>", lambda ev: self.after(1, self.load))
-        button(inner, "Restrict", self.restrict, "danger").pack(
-            side="left", padx=(12, 0))
-        button(inner, "Reinstate", self.reinstate, "ghost").pack(
-            side="left", padx=(8, 0))
-
         panel = card(self, pad=0)
-        panel.pack(fill="both", expand=True, pady=(16, 0))
+        panel.pack(fill="both", expand=True)
         section_title(panel.inner, "Library users",
                       sub="Students and staff with their current borrowing "
                           "standing")
         holder = tk.Frame(panel.inner, bg=WHITE)
         holder.pack(fill="both", expand=True, pady=(14, 0))
-        self.tv = tree(holder, ["ID", "NAME", "ROLE", "ON LOAN", "OVERDUE",
-                                "STATUS", "RESTRICTION"],
-                       [105, 190, 80, 75, 80, 105, 270], height=15)
+        self.tv = tree(holder, ["ID", "NAME", "ROLE", "PROGRAM", "ON LOAN",
+                                "OVERDUE", "STATUS"],
+                       [115, 210, 110, 260, 95, 95, 120], height=16)
         sb = attach_scroll(self.tv, holder)
         self.tv.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        self.tv.bind("<Double-1>", lambda ev: self.toggle_status(ev))
-        self.count_lbl = tk.Label(
-            panel.inner, text="", bg=WHITE, fg=MUTED, font=(BODY, 9))
-        self.count_lbl.pack(anchor="w", pady=(10, 0))
+        self.tv.bind("<Double-1>", self.toggle_status)
+        hint = tk.Label(panel.inner, text="Double-click a row to block or "
+                         "reinstate a student account.", bg=WHITE, fg=MUTED,
+                         font=(BODY, 9))
+        hint.pack(anchor="w", pady=(10, 0))
         self.load()
 
     def load(self):
-        keep = self.tv.selection()
         self.tv.delete(*self.tv.get_children())
-        q = self.query.get().lower().strip()
-        role, state = self.role.get(), self.state.get()
-        shown = restricted = 0
         for u in self.db.all("SELECT * FROM users ORDER BY role, username"):
-            blocked = u["status"] != "active"
-            restricted += blocked
-            if role != "All roles" and u["role"] != role.lower():
-                continue
-            if state == "Active" and blocked:
-                continue
-            if state == "Restricted" and not blocked:
-                continue
-            if q and q not in f"{u['username']} {u['name']}".lower():
-                continue
             loans = self.db.scalar(
                 "SELECT COUNT(*) FROM loans WHERE user_id=? AND status IN "
                 "('active','overdue')", (u["id"],))
             overdue = self.db.scalar(
                 "SELECT COUNT(*) FROM loans WHERE user_id=? AND status="
                 "'overdue'", (u["id"],))
-            why = account_restriction(self.db, u["id"]) or ""
-            if blocked and u["restricted_at"]:
-                why += f"  ({fmt_date(u['restricted_at'])})"
             self.tv.insert("", "end", iid=str(u["id"]), values=(
-                u["username"], u["name"], u["role"].title(), loans, overdue,
-                "●  " + ("Restricted" if blocked else "Active"), why))
-            shown += 1
-        for iid in keep:
-            if self.tv.exists(iid):
-                self.tv.selection_set(iid)
-        self.count_lbl.configure(
-            text=f"Showing {shown} accounts  •  {restricted} restricted  •  "
-                 "Select a row, then Restrict or Reinstate "
-                 "(double-click toggles).")
-
-    def selected_user(self):
-        sel = self.tv.selection()
-        if not sel:
-            messagebox.showinfo("Users", "Select an account first.",
-                                parent=self)
-            return None
-        return user_by_id(self.db, int(sel[0]))
+                u["username"], u["name"], u["role"].title(),
+                u["program"] or "-", loans, overdue,
+                "●  " + ("Active" if u["status"] == "active" else "Blocked")))
 
     def toggle_status(self, event):
-        sel = self.tv.identify_row(event.y) if event is not None else ""
-        if sel:
-            self.tv.selection_set(sel)
-        user = self.selected_user()
-        if not user:
+        sel = self.tv.selection()
+        if not sel:
             return
-        if user["status"] == "active":
-            self.restrict()
-        else:
-            self.reinstate()
-
-    def restrict(self):
-        user = self.selected_user()
-        if not user:
-            return
+        uid = int(sel[0])
+        user = user_by_id(self.db, uid)
         if user["role"] == "admin":
-            messagebox.showinfo("Users", "Administrator accounts cannot be "
-                                "restricted.", parent=self)
+            messagebox.showinfo("Users", "Administrators cannot be blocked.",
+                                parent=self)
             return
-        if user["status"] != "active":
-            messagebox.showinfo("Users", f"{user['name']} is already "
-                                "restricted.", parent=self)
+        new = "blocked" if user["status"] == "active" else "active"
+        if not messagebox.askyesno("Users",
+                                   f"{new.title()} the account of "
+                                   f"{user['name']}?", parent=self):
             return
-
-        def apply(reason):
-            ok, msg = restrict_account(self.db, user["id"],
-                                       self.shell.user, reason)
-            if ok:
-                Toast(self.shell.app, "Account restricted", msg, "info")
-            else:
-                messagebox.showwarning("Users", msg, parent=self)
-            self.load()
-        RestrictDialog(self, user, apply)
-
-    def reinstate(self):
-        user = self.selected_user()
-        if not user:
-            return
-        if user["status"] == "active":
-            messagebox.showinfo("Users", f"{user['name']} is not "
-                                "restricted.", parent=self)
-            return
-        hard, soft = reinstate_blockers(self.db, user["id"])
-        if hard:
-            messagebox.showwarning(
-                "Users", "Cannot reinstate yet:\n\n" + "\n".join(hard),
-                parent=self)
-            return
-        extra = ("\n\n" + "\n".join(soft) + "\nReinstate anyway?"
-                 if soft else "")
-        if not messagebox.askyesno(
-                "Users", f"Reinstate the account of {user['name']}?{extra}",
-                parent=self):
-            return
-        ok, msg = reinstate_account(self.db, user["id"], self.shell.user,
-                                    override_soft=bool(soft))
-        if ok:
-            Toast(self.shell.app, "Account reinstated", msg, "info")
-        else:
-            messagebox.showwarning("Users", msg, parent=self)
+        self.db.run("UPDATE users SET status=? WHERE id=?", (new, uid))
         self.load()
 
 
