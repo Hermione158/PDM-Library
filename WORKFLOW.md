@@ -89,7 +89,7 @@ flowchart LR
     L -- "Staff tab" --> SA["Staff shell"]
     L -- "Admin tab" --> AD["Admin shell"]
     L -- "New student? Create an account" --> SU
-    SU -- "Create account" --> ST
+    SU -- "Signup, then OK" --> ST
 
     ST --> S1["Catalog"] --> S2["Book details"]
     ST --> S3["My loans"]
@@ -267,19 +267,19 @@ flowchart TB
 
 ### A.0b Register a new student account (self-service)
 
-Accessed from the link **New student? Create an account** under the sign-in button (Student tab only).
+Accessed from the link **New student? Create an account** under the sign-in button (Student tab only). The card sits on a scrollable panel, so the form keeps full-size fields and can be scrolled when the window is short.
 
 | Step | Field | Rule and error message |
 |---|---|---|
 | A1.1 | **Student number** (prefix `e.g. 2024-018423`) | Must match `\d{4}-\d{6}` → *"Student number should look like 2024-018423."* |
 | A1.2 | — | Must be unused → *"That student number is already registered - sign in instead."* |
 | A1.3 | **Full name** (placeholder `e.g. Juan D. Cruz`) | ≥ 3 chars, contains a space, not the placeholder → *"Enter your complete name (first and last)."* |
-| A1.4 | **Program** (dropdown) · **Year level** (1st–4th Year) · **Section** (A/B/C/D, no default) | All required → *"Select your program and year level."* / *"Select your section (A, B, C or D)."* |
+| A1.4 | **Program** (dropdown, fixed: BS Information Technology, BS Tourism, BS Hospitality Management, BS Computer Science, BS Early Childhood Education, BTLED, BS Entrepreneurship) · **Year level** (1st–4th Year) · **Section** (A/B/C/D, no default) | All required → *"Select your program and year level."* / *"Select your section (A, B, C or D)."* |
 | A1.5 | **Password** | ≥ 6 characters → *"Password must be at least 6 characters."* |
 | A1.6 | **Confirm password** | Must match → *"Passwords do not match."* |
-| A1.7 | Click **→ Create account** | Row inserted into `users` with `role='student'`, the chosen `program`, `year_level` and `section`, `status='active'`, `joined=today` |
-| A1.8 | — | Automatically signed in; toast **Account created** — *"Welcome, {first name}! Your library account is active."* |
-| A1.9 | **← Back to sign in** | Returns to the login screen at any time |
+| A1.7 | Click **→ Signup** (the only submit path — pressing Enter does nothing) | Row inserted into `users` with `role='student'`, the chosen `program`, `year_level` and `section`, `status='active'`, `joined=today` |
+| A1.8 | — | Dialog **Account created** — *"Your account has been created, {first name}! Click OK to open your student dashboard."*; **OK** signs the student in and opens the student dashboard |
+| A1.9 | **← Back** (top of the form) · **← Back to sign in** (bottom) | Either returns to the login screen at any time |
 
 ### A.1 Catalog browsing
 
@@ -365,7 +365,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | B1.4 | **How processing works** (side rail) | Three numbered steps, then the gold **WAITING AT THIS DESK** box — `{n} borrow • {n} pickup` |
 | B1.5 | Click **Process** on a row | `held_copy()` picks the reserved, unloaned copy of that title and passes it to `checkout()` with the requesting student → toast *"Request processed — {name} — Due {date}"*. If the student became ineligible or the copy is gone → warning box with the reason |
 | B1.6 | After processing | The row disappears; `loans`, `copies`, `transactions`, `notifications` updated; `release_hold()` re-matches anything left on that title (next waiter promoted, or the copy freed) |
-| B1.7 | **Recent transactions** panel | TIME / STUDENT / NAME / ITEM / TYPE / PROCESSED BY / STATUS — rendered under every tab, unchanged |
+| B1.7 | **Recent transactions** panel | TIME / STUDENT / NAME / PROGRAM / SECTION / ITEM / TYPE / PROCESSED BY / STATUS — rendered under every tab. Rows use the size-9 `PDM.SmallTreeview` style so long names and programs fit, and a horizontal scrollbar appears when the panel is narrower than the table |
 
 **Eligibility gate applied at B1.5** (`eligibility()`): account exists → account `active` → **0 overdue items** → fewer than **5** active loans. It runs again at processing time, so a student blocked after submitting is refused with the reason shown.
 
@@ -401,7 +401,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | B4.1 | Sidebar **Catalog ☰** | Same search and filters, but the action button is **View record** instead of Reserve/Join waitlist |
 | B4.2 | In *Book details*, staff see **Open in circulation** | Jumps to the Circulation workspace |
 | B4.3 | Sidebar **Transactions ≣** | **Show** filter: All / Checkout / Return / Renewal, **Refresh** button |
-| B4.4 | Table | TIME / STUDENT / NAME / ITEM / TYPE / PROCESSED BY / STATUS / NOTE (up to 300 rows) |
+| B4.4 | Table | TIME / STUDENT / NAME / PROGRAM / SECTION / ITEM / BOOK NAME / TYPE / PROCESSED BY / STATUS / NOTE (up to 300 rows). Rows use the size-9 `PDM.SmallTreeview` style and **BOOK NAME** is widened so typical titles fit at full window width; a horizontal scrollbar reveals anything wider than the panel |
 
 *Circulation also shows a **Recent transactions** panel with the last 8 events; every row notes: "Every event is written to the transaction log and drives the admin dashboard."*
 
@@ -446,7 +446,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | C4.1 | Sidebar **SDO cases ⚑** | Screen *Overdue & SDO escalation* |
 | C4.2 | Four counters | 1 day overdue, 2+ days overdue, SDO pending, SDO acknowledged |
 | C4.3 | **Escalation register** | Rows: student, program, title, due date, days overdue, pill *Pending* / *Acknowledged* |
-| C4.4 | Click **Mark acknowledged** (pending rows) | `sdo_cases.status='acknowledged'`, `resolved_at` set → row shows *"Closed {date}"*; `announce_case_closed()` writes a system-wide *"SDO case acknowledged — Case SDO-00n for {name} … was closed after SDO compliance"* that appears on the Dashboard **Notifications** card and in the bell, and `refresh_bell()` updates the badge immediately |
+| C4.4 | Click **Mark acknowledged** (pending rows) | `sdo_cases.status='acknowledged'`, `resolved_at` set → row shows *"Closed {date}"*; `announce_case_closed()` writes a system-wide *"SDO case acknowledged — Case SDO-00n for {name} … was closed after SDO compliance"* that appears on the Dashboard **Notifications** card and in the bell, and `refresh_bell()` updates the badge immediately; then `ack_guidance()` opens a **Case acknowledged** dialog saying what still restricts the student — *"…still has n overdue book(s) out, so the account stays blocked. Once the books are returned, reinstate the account on Users (double-click the row)."* while books are out, *"All books are back. Reinstate the account on Users …"* when the account is still blocked with nothing overdue, or *"The account is active - borrowing is restored."* when clear (plus a *remaining pending cases* clause when applicable). Acknowledged rows in the register repeat the remaining restriction inline |
 | C4.5 | Gold note | *"Overdue records are escalated automatically after 2 day(s) past the due date, when the account is also restricted, in place of financial penalties."* |
 
 ---
@@ -698,7 +698,7 @@ Run once from a fresh launch (delete `library.db` first if you want the seeded d
 | # | Actor | Steps | Expected result |
 |---|---|---|---|
 | 1 | Anonymous | Start the app, stay on the **Student** tab, click **New student? Create an account** | Registration form appears with the same maroon hero |
-| 2 | Student | Enter `2026-000001`, `Juan D. Cruz`, a program, **2nd Year**, section **B**, password `sample1` twice → **→ Create account** | Toast *"Account created — Welcome, Juan! Your library account is active."*; shell opens on the catalog |
+| 2 | Student | Enter `2026-000001`, `Juan D. Cruz`, a program, **2nd Year**, section **B**, password `sample1` twice → **→ Signup** | Dialog **Account created** — *"Your account has been created, Juan! Click OK to open your student dashboard."* → **OK** opens the shell on the catalog |
 | 3 | Student | Search a title whose copies are all out, click it, then **Join reservation waitlist** | Toast with the queue position; row appears under **Reservations** as `#1 Waiting` |
 | 3b | Student | Search a title with a free copy, click it, then **Borrow today** | Toast *"Sent to the library desk - collect your book today"*; the catalog row and *Book details* show **Borrow requested**; the copy is held (title pill **Reserved**) |
 | 3c | Student | On a **different** title with a free copy, click **Reserve** | Toast *"Ready for pickup by {today+3}"* — an instant hold, no queue; the row shows **Ready for pickup** / *Pick up by …* |

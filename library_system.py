@@ -292,18 +292,26 @@ class ScrollFrame(tk.Frame):
         self.canvas.yview_scroll(int(-event.delta / 120), "units")
 
 
+# style="PDM.SmallTreeview" drops rows to a size-9 font for the dense tx tables.
 # tree(...) — themed Treeview with fixed columns; lists, registers, inventory.
-def tree(parent, columns, widths, height=8):
-    style = ttk.Style()
-    style.theme_use("clam")
-    style.configure("PDM.Treeview", background=WHITE, fieldbackground=WHITE,
-                    foreground=INK, rowheight=34, font=(BODY, 10),
-                    borderwidth=0, relief="flat")
-    style.configure("PDM.Treeview.Heading", background=CREAM_DEEP, foreground=MUTED,
-                    font=(BODY, 9, "bold"), relief="flat", padding=6)
-    style.layout("PDM.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+def tree(parent, columns, widths, height=8, style="PDM.Treeview"):
+    sty = ttk.Style()
+    sty.theme_use("clam")
+    sty.configure("PDM.Treeview", background=WHITE, fieldbackground=WHITE,
+                  foreground=INK, rowheight=34, font=(BODY, 10),
+                  borderwidth=0, relief="flat")
+    sty.configure("PDM.Treeview.Heading", background=CREAM_DEEP, foreground=MUTED,
+                  font=(BODY, 9, "bold"), relief="flat", padding=6)
+    sty.configure("PDM.SmallTreeview", background=WHITE, fieldbackground=WHITE,
+                  foreground=INK, rowheight=30, font=(BODY, 9),
+                  borderwidth=0, relief="flat")
+    sty.configure("PDM.SmallTreeview.Heading", background=CREAM_DEEP,
+                  foreground=MUTED, font=(BODY, 9, "bold"), relief="flat",
+                  padding=6)
+    sty.layout("PDM.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+    sty.layout("PDM.SmallTreeview", [("Treeview.treearea", {"sticky": "nswe"})])
     tv = ttk.Treeview(parent, columns=columns, show="headings",
-                      style="PDM.Treeview", height=height)
+                      style=style, height=height)
     for col, w in zip(columns, widths):
         tv.heading(col, text=col.upper())
         tv.column(col, width=w, anchor="w")
@@ -802,6 +810,33 @@ def announce_case_closed(db, case_id, how):
                   "info", f"sdoack:{row['id']}")
 
 
+# ack_guidance(db, case_id) — post-ack summary of what still restricts the student; empty if no such case; see C4.4.
+def ack_guidance(db, case_id):
+    row = db.one("SELECT s.id, s.user_id, u.name, u.username, u.status "
+                 "FROM sdo_cases s JOIN users u ON u.id=s.user_id "
+                 "WHERE s.id=?", (case_id,))
+    if not row:
+        return ""
+    late = db.scalar("SELECT COUNT(*) FROM loans WHERE user_id=? AND "
+                     "status='overdue'", (row["user_id"],))
+    others = db.scalar("SELECT COUNT(*) FROM sdo_cases WHERE user_id=? AND "
+                       "status='pending' AND id<>?", (row["user_id"], case_id))
+    head = (f"SDO-{row['id']:03d} acknowledged for {row['name']} "
+            f"({row['username']}). ")
+    if late:
+        body = (f"They still have {late} overdue book(s) out, so the account "
+                f"stays blocked. Once the books are returned, reinstate the "
+                f"account on Users (double-click the row).")
+    elif row["status"] == "blocked":
+        body = ("All books are back. Reinstate the account on Users "
+                "(double-click the row) to restore borrowing.")
+    else:
+        body = "The account is active - borrowing is restored."
+    if others:
+        body += f" {others} other case(s) for this student remain pending."
+    return head + body
+
+
 # log_tx(...) — one audit row (Checkout / Return / Renewal); feeds charts and tables.
 def log_tx(db, user_id, copy_id, tx_type, staff_id, status="Completed",
            note=""):
@@ -1228,12 +1263,14 @@ def weekly_activity(db):
     return labels, counts
 
 
-# recent_transactions(db, limit) — newest audit rows with user / copy / staff names.
+# recent_transactions(db, limit) — newest audit rows with borrower program / section, book title and staff names.
 def recent_transactions(db, limit=8):
     return db.all(
-        "SELECT t.*, u.username, u.name, c.accession, s.name AS staff "
+        "SELECT t.*, u.username, u.name, u.program, u.section, c.accession, "
+        "b.title AS title, s.name AS staff "
         "FROM transactions t LEFT JOIN users u ON u.id=t.user_id "
         "LEFT JOIN copies c ON c.id=t.copy_id "
+        "LEFT JOIN books b ON b.id=c.book_id "
         "LEFT JOIN users s ON s.id=t.staff_id "
         "ORDER BY t.ts DESC LIMIT ?", (limit,))
 
@@ -1649,7 +1686,7 @@ class App(tk.Tk):
         self.login_error.configure(text="")
         self.open_shell(user)
 
-    # build_signup() — registration form (number, name, program, year, passwords).
+    # build_signup() — scrollable registration form; only the Signup button submits.
     def build_signup(self):
         self.clear_root()
         self.user = None
@@ -1665,15 +1702,23 @@ class App(tk.Tk):
         right.grid(row=0, column=1, sticky="nsew")
         self.build_auth_left(left)
 
-        holder = tk.Frame(right, bg=CREAM)
-        holder.pack(expand=True)
-        panel = tk.Frame(holder, bg=WHITE, highlightthickness=1,
+        # ScrollFrame keeps every field at full height on short windows;
+        # a plain pack starved the Confirm password field and the button.
+        scroll = ScrollFrame(right, bg=CREAM)
+        scroll.pack(fill="both", expand=True)
+        card_pad = 60
+        panel = tk.Frame(scroll.body, bg=WHITE, highlightthickness=1,
                          highlightbackground="#E3DACB")
-        panel.pack(padx=60, pady=40)
+        panel.pack(padx=card_pad, pady=40)
         form = tk.Frame(panel, bg=WHITE)
         form.pack(padx=48, pady=(44, 40))
         tk.Frame(form, bg=WHITE, width=470, height=1).pack(fill="x")
 
+        top_back = tk.Label(form, text="←   Back", bg=WHITE, fg=MAROON,
+                            font=(BODY, 11, "bold"), cursor="hand2",
+                            anchor="w")
+        top_back.pack(fill="x")
+        top_back.bind("<Button-1>", lambda e: self.build_login())
         tk.Label(form, text="Create your account", bg=WHITE, fg=INK,
                  font=tkfont.Font(family=HEAD, size=28, weight="bold"),
                  anchor="w").pack(fill="x")
@@ -1710,7 +1755,10 @@ class App(tk.Tk):
 
         self.su_name = field(form, "Full name")
         placeholder(self.su_name, "e.g. Juan D. Cruz")
-        programs = sorted({s[2] for s in STUDENTS})
+        programs = ["BS Information Technology", "BS Tourism",
+                    "BS Hospitality Management", "BS Computer Science",
+                    "BS Early Childhood Education", "BTLED",
+                    "BS Entrepreneurship"]
         self.su_program = combo_field("Program", programs, "readonly")
         self.su_year = combo_field("Year level",
                                    ["1st Year", "2nd Year", "3rd Year",
@@ -1726,12 +1774,14 @@ class App(tk.Tk):
                                  font=(BODY, 10, "bold"), anchor="w")
         self.su_error.pack(fill="x")
 
-        tk.Button(form, text="→   Create account",
-                  command=self.attempt_signup, bg=MAROON, fg=WHITE,
-                  activebackground=MAROON_HOVER, activeforeground=WHITE,
-                  relief="flat", bd=0, font=tkfont.Font(family=BODY, size=12,
-                                                        weight="bold"),
-                  pady=13, cursor="hand2").pack(fill="x", pady=(8, 12))
+        self.su_btn = tk.Button(form, text="→   Signup",
+                                command=self.attempt_signup, bg=MAROON,
+                                fg=WHITE, activebackground=MAROON_HOVER,
+                                activeforeground=WHITE, relief="flat", bd=0,
+                                font=tkfont.Font(family=BODY, size=12,
+                                                  weight="bold"),
+                                pady=13, cursor="hand2")
+        self.su_btn.pack(fill="x", pady=(8, 12))
 
         back = tk.Label(form, text="←   Back to sign in", bg=WHITE,
                         fg=MAROON, font=(BODY, 10, "bold"), cursor="hand2",
@@ -1751,15 +1801,17 @@ class App(tk.Tk):
                  justify="left", wraplength=360).pack(
             side="left", padx=(0, 12), pady=10)
 
-        self.su_id.bind("<Return>", lambda e: self.attempt_signup())
-        self.su_name.bind("<Return>", lambda e: self.attempt_signup())
-        self.su_pw.bind("<Return>", lambda e: self.attempt_signup())
-        self.su_pw2.bind("<Return>", lambda e: self.attempt_signup())
+        # The card canvas must request the card's full width (its content
+        # plus the side padding), or the grid starves this column and the
+        # card title clips; the idle pass makes winfo_reqwidth() current.
+        self.update_idletasks()
+        scroll.canvas.configure(width=panel.winfo_reqwidth() + 2 * card_pad)
+
         self.su_program.set(programs[0])
         self.su_year.set("1st Year")
         self.su_id.focus_set()
 
-    # attempt_signup() — validates dddd-dddddd + name + program/year/section + passwords, creates the account; see §11.
+    # attempt_signup() — validates dddd-dddddd + name + program/year/section + passwords, creates the account, then the OK dialog opens the shell; see §11.
     def attempt_signup(self):
         username = self.su_id.get().strip()
         name = self.su_name.get().strip()
@@ -1804,10 +1856,12 @@ class App(tk.Tk):
              section, "", "active", iso(today())))
         user = self.db.one("SELECT * FROM users WHERE username=?",
                            (username,))
+        messagebox.showinfo(
+            "Account created",
+            f"Your account has been created, {name.split()[0]}!\n"
+            "Click OK to open your student dashboard.",
+            parent=self)
         self.open_shell(user)
-        Toast(self, "Account created",
-              f"Welcome, {name.split()[0]}! Your library account is active.",
-              "info")
 
     # open_shell(user) — builds the Shell, scans, and toasts pending notifications.
     def open_shell(self, user):
@@ -3484,6 +3538,7 @@ class CirculationScreen(tk.Frame):
             messagebox.showinfo("Renew", msg, parent=self)
         self.render()
 
+    # Small type plus h-scroll keeps long names and programs readable.
     # recent(main) — side panel with the newest circulation transactions.
     def recent(self, main):
         panel = card(main, pad=0)
@@ -3493,14 +3548,19 @@ class CirculationScreen(tk.Frame):
         rows = recent_transactions(self.db, 8)
         holder = tk.Frame(panel.inner, bg=WHITE)
         holder.pack(fill="x", pady=(12, 0))
-        tv = tree(holder, ["TIME", "STUDENT", "NAME", "ITEM", "TYPE",
-                           "PROCESSED BY", "STATUS"],
-                  [62, 92, 145, 96, 72, 110, 98], height=len(rows) or 1)
+        tv = tree(holder, ["TIME", "STUDENT", "NAME", "PROGRAM", "SECTION",
+                           "ITEM", "TYPE", "PROCESSED BY", "STATUS"],
+                  [60, 70, 126, 188, 66, 78, 62, 110, 90],
+                  height=len(rows) or 1, style="PDM.SmallTreeview")
         for r in rows:
             tv.insert("", "end", values=(
                 tx_time(r["ts"]), r["username"] or "-", r["name"] or "-",
+                r["program"] or "-", r["section"] or "-",
                 r["accession"] or "-", r["type"], r["staff"] or "-",
                 r["status"]))
+        hsb = ttk.Scrollbar(holder, orient="horizontal", command=tv.xview)
+        hsb.pack(side="bottom", fill="x")
+        tv.configure(xscrollcommand=hsb.set)
         tv.pack(fill="x")
         tk.Label(holder, text="Every event is written to the transaction log "
                  "and drives the admin dashboard.", bg=WHITE, fg=MUTED,
@@ -3537,12 +3597,20 @@ class TransactionsScreen(tk.Frame):
                           "processing librarian")
         holder = tk.Frame(panel.inner, bg=WHITE)
         holder.pack(fill="both", expand=True, pady=(14, 0))
-        self.tv = tree(holder, ["TIME", "STUDENT", "NAME", "ITEM", "TYPE",
-                                "PROCESSED BY", "STATUS", "NOTE"],
-                       [78, 98, 158, 102, 84, 124, 118, 200], height=14)
-        sb = attach_scroll(self.tv, holder)
+        body = tk.Frame(holder, bg=WHITE)
+        self.tv = tree(body, ["TIME", "STUDENT", "NAME", "PROGRAM",
+                              "SECTION", "ITEM", "BOOK NAME", "TYPE",
+                              "PROCESSED BY", "STATUS", "NOTE"],
+                       [60, 70, 126, 188, 66, 78, 330, 62, 110, 90, 170],
+                       height=14, style="PDM.SmallTreeview")
+        hsb = ttk.Scrollbar(holder, orient="horizontal",
+                            command=self.tv.xview)
+        hsb.pack(side="bottom", fill="x")
+        self.tv.configure(xscrollcommand=hsb.set)
+        sb = attach_scroll(self.tv, body)
         self.tv.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        body.pack(side="left", fill="both", expand=True)
         self.load()
 
     # load() — redraws the log for the chosen type filter.
@@ -3555,8 +3623,9 @@ class TransactionsScreen(tk.Frame):
                 continue
             self.tv.insert("", "end", values=(
                 tx_time(r["ts"]), r["username"] or "-", r["name"] or "-",
-                r["accession"] or "-", r["type"], r["staff"] or "-",
-                r["status"], r["note"] or ""))
+                r["program"] or "-", r["section"] or "-",
+                r["accession"] or "-", r["title"] or "-", r["type"],
+                r["staff"] or "-", r["status"], r["note"] or ""))
 # DashboardScreen — KPIs, circulation chart, escalation buckets, system feed, report export; see C.1.
 class DashboardScreen(tk.Frame):
     # Builds the whole dashboard, including the Export report header button.
@@ -3989,8 +4058,11 @@ class CasesScreen(tk.Frame):
                       sub="Overdue records forwarded to the Student "
                           "Disciplinary Office")
         rows = self.db.all(
-            "SELECT s.*, u.username, u.name, u.program, b.title, l.due_date, "
-            "l.status FROM sdo_cases s JOIN users u ON u.id=s.user_id "
+            "SELECT s.*, u.username, u.name, u.program, "
+            "u.status AS user_status, b.title, l.due_date, l.status, "
+            "(SELECT COUNT(*) FROM loans lo WHERE lo.user_id=u.id AND "
+            " lo.status='overdue') AS late_count "
+            "FROM sdo_cases s JOIN users u ON u.id=s.user_id "
             "JOIN loans l ON l.id=s.loan_id JOIN copies c ON c.id=l.copy_id "
             "JOIN books b ON b.id=c.book_id ORDER BY s.status, s.id DESC")
         holder = tk.Frame(panel.inner, bg=WHITE)
@@ -4028,6 +4100,16 @@ class CasesScreen(tk.Frame):
             else:
                 tk.Label(right, text=f"Closed {fmt_date(r['resolved_at'])}",
                          bg=bg, fg=fg, font=(BODY, 8)).pack(anchor="e")
+                hint = None
+                if r["late_count"]:
+                    hint = (f"Still has {r['late_count']} overdue book(s) out "
+                            f"- stays blocked until returned, then reinstate "
+                            f"on Users.")
+                elif r["user_status"] == "blocked":
+                    hint = "Account still blocked - reinstate on Users."
+                if hint:
+                    tk.Label(txt, text=hint, bg=bg, fg=fg, font=(BODY, 9),
+                             anchor="w").pack(anchor="w")
 
         note = tk.Frame(panel.inner, bg=GOLD_SOFT, highlightthickness=1,
                         highlightbackground="#F0E0AE")
@@ -4039,7 +4121,7 @@ class CasesScreen(tk.Frame):
                  bg=GOLD_SOFT, fg="#8A6A15", font=(BODY, 10), padx=14,
                  pady=12, anchor="w").pack(fill="x")
 
-    # ack(case_id) — marks one case acknowledged, announces it system-wide, refreshes the bell; see C4.4.
+    # ack(case_id) — marks one case acknowledged, announces it, refreshes the bell and dialogues what still restricts; see C4.4.
     def ack(self, case_id):
         self.db.run("UPDATE sdo_cases SET status='acknowledged', resolved_at=? "
                     "WHERE id=?", (iso(today()), case_id))
@@ -4049,6 +4131,8 @@ class CasesScreen(tk.Frame):
               "The record is now with the Student Disciplinary Office.",
               "info")
         self.shell.navigate("cases")
+        messagebox.showinfo("Case acknowledged",
+                            ack_guidance(self.db, case_id), parent=self)
 
 
 SCREENS = {
