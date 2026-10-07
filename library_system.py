@@ -774,6 +774,14 @@ def reservation_for(db, book_id, user_id):
                   (book_id, user_id))
 
 
+# title_loan(db, user_id, book_id) — this student's live loan on a title; one title stays out at a time.
+def title_loan(db, user_id, book_id):
+    return db.one(
+        "SELECT l.due_date FROM loans l JOIN copies c ON c.id=l.copy_id "
+        "WHERE l.user_id=? AND c.book_id=? AND l.status IN ('active','overdue') "
+        "ORDER BY l.due_date LIMIT 1", (user_id, book_id))
+
+
 # queue_for(db, book_id) — waiting queue of a title in position order.
 def queue_for(db, book_id):
     return db.all(
@@ -887,6 +895,9 @@ def checkout(db, user, accessions, staff):
         ok, reason = eligibility(db, user)
         if not ok:
             results.append((accession, False, reason))
+            continue
+        if title_loan(db, user["id"], copy["book_id"]):
+            results.append((accession, False, "Already holds this title"))
             continue
         due = iso(today() + dt.timedelta(days=setting(db, "loan_days", LOAN_DAYS)))
         db.run("INSERT INTO loans(copy_id,user_id,checkout_date,due_date,status) "
@@ -1060,6 +1071,9 @@ def reserve(db, book_id, user):
         return False, "Title not found"
     if reservation_for(db, book_id, user["id"]):
         return False, "You already hold a reservation for this title"
+    held = title_loan(db, user["id"], book_id)
+    if held:
+        return False, f"You already have this title out - due {fmt_date(held['due_date'])}"
     ok, reason = eligibility(db, user)
     if not ok:
         return False, reason
@@ -1098,6 +1112,9 @@ def request_borrow(db, book_id, user):
         return False, "Title not found"
     if reservation_for(db, book_id, user["id"]):
         return False, "You already hold a request for this title"
+    held = title_loan(db, user["id"], book_id)
+    if held:
+        return False, f"You already have this title out - due {fmt_date(held['due_date'])}"
     ok, reason = eligibility(db, user)
     if not ok:
         return False, reason
@@ -2389,9 +2406,15 @@ class CatalogScreen(tk.Frame):
     def refresh(self):
         self.query.set(self.entry.get())
         self.mine = {}
+        self.held = {}
         if not self.readonly:
             for res in my_reservations(self.db, self.shell.user["id"]):
                 self.mine[res["bid"]] = res
+            for loan in self.db.all(
+                    "SELECT c.book_id AS bid, l.due_date FROM loans l "
+                    "JOIN copies c ON c.id=l.copy_id WHERE l.user_id=? AND "
+                    "l.status IN ('active','overdue')", (self.shell.user["id"],)):
+                self.held[loan["bid"]] = loan
         rows = self.all_rows()
         self.build_filters(rows)
         rows = self.filtered(rows)
@@ -2420,6 +2443,7 @@ class CatalogScreen(tk.Frame):
     def book_row(self, row, last):
         status = book_status(row)
         mine = self.mine.get(row["id"])
+        held = self.held.get(row["id"])
         wrap = tk.Frame(self.results.body, bg=WHITE)
         wrap.pack(fill="x", padx=18)
         inner = tk.Frame(wrap, bg=WHITE, highlightthickness=1,
@@ -2460,6 +2484,9 @@ class CatalogScreen(tk.Frame):
         if self.readonly:
             button(right, "View record", lambda r=row: self.open(r),
                    "ghost").pack(anchor="e")
+        elif held:
+            button(right, f"Borrowed - due {fmt_date(held['due_date'])}",
+                   lambda r=row: self.open(r), "ghost").pack(anchor="e")
         elif mine:
             label = {"requested": "Borrow requested",
                      "ready": "Ready - pick up"}.get(
@@ -2534,6 +2561,14 @@ class DetailsScreen(tk.Frame):
         queue = queue_for(self.db, book_id)
         mine = (reservation_for(self.db, book_id, shell.user["id"])
                 if shell.user["role"] == "student" else None)
+        on_loan = (title_loan(self.db, shell.user["id"], book_id)
+                   if shell.user["role"] == "student" else None)
+        is_staff = shell.user["role"] != "student"
+        holders = (self.db.all(
+            "SELECT u.name FROM reservations r JOIN users u ON u.id=r.user_id "
+            "WHERE r.book_id=? AND r.status IN ('ready','requested') "
+            "ORDER BY COALESCE(r.ready_at, r.created_at)", (book_id,))
+            if is_staff else [])
 
         scroll = ScrollFrame(self, bg=CREAM)
         scroll.pack(fill="both", expand=True)
@@ -2600,6 +2635,7 @@ class DetailsScreen(tk.Frame):
                  f"{avail} available now", bg=WHITE, fg=MUTED,
                  font=(BODY, 10)).pack(side="right", pady=4)
         rows = []
+        hold_i = 0
         for c in copies:
             if c["status"] == "available":
                 state, tag, due = "●  Available", "available", "-"
@@ -2608,13 +2644,26 @@ class DetailsScreen(tk.Frame):
             else:
                 state, tag = "●  Checked out", "checked"
                 due = fmt_date(c["due_date"]) if c["due_date"] else "-"
-            rows.append(((c["accession"], f"Main Stacks  •  Shelf {c['shelf']}",
-                          state, due), tag))
+            cells = (c["accession"], f"Main Stacks  •  Shelf {c['shelf']}",
+                     state, due)
+            if is_staff:
+                name = "-"
+                if c["status"] == "reserved":
+                    if hold_i < len(holders):
+                        name = holders[hold_i]["name"]
+                    hold_i += 1
+                cells = (cells[0], name) + cells[1:]
+            rows.append((cells, tag))
         holder = tk.Frame(copies_card.inner, bg=WHITE)
         holder.pack(fill="x", pady=(12, 0))
-        tv = tagged_tree(holder, ["ACCESSION NO.", "LOCATION", "STATUS",
-                                  "DUE / HOLD"],
-                         [130, 240, 160, 150], rows, height=len(rows))
+        if is_staff:
+            tv = tagged_tree(holder, ["ACCESSION NO.", "RESERVED BY",
+                                      "LOCATION", "STATUS", "DUE / HOLD"],
+                             [130, 170, 240, 160, 150], rows, height=len(rows))
+        else:
+            tv = tagged_tree(holder, ["ACCESSION NO.", "LOCATION", "STATUS",
+                                      "DUE / HOLD"],
+                             [130, 240, 160, 150], rows, height=len(rows))
         tv.pack(fill="x")
         tv.tag_configure("checked", foreground=INK)
 
@@ -2674,7 +2723,11 @@ class DetailsScreen(tk.Frame):
                                       weight="bold")).pack(side="right")
 
         if self.shell.user["role"] == "student":
-            if mine:
+            if on_loan:
+                button(pane, f"Borrowed - due {fmt_date(on_loan['due_date'])}",
+                       lambda: shell.navigate("reservations"), "ghost",
+                       icon="⚑").pack(fill="x")
+            elif mine:
                 label = {"requested": "Borrow requested",
                          "ready": "Pick up by " + fmt_date(mine["ready_at"])
                          }.get(mine["status"], f"In queue #{mine['position']}")

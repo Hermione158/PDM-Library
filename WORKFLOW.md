@@ -298,12 +298,13 @@ Accessed from the link **New student? Create an account** under the sign-in butt
 |---|---|---|
 | A3.1 | Click the title (or **View record**) | Opens *Book details*: cover, category pill, call number, publisher/edition/year/ISBN, description, subject tags |
 | A3.2 | **Copies & availability** card | Lists every accession with its shelf and status |
-| A3.3a | Copies free → click **Borrow today** | **Issue it at the desk, no window.** Copy → `reserved`, reservation created `status='requested'` with `ready_at = NULL`; toast *"Sent to the library desk - collect your book today"*; staff alert *"Borrow request"*; student notice *"… set aside for you - collect it at the desk today."* The request sits in the staff **Requests** list until it is processed |
-| A3.3b | Copies free → click **Reserve** | **Instant hold, no queue.** Reservation created `status='ready'` with `position = NULL`, that copy set to `reserved`, `ready_at = today + 3`; toast *"Ready for pickup by {date}"*; staff notice *"… held at shelf X for {name}"*. The 3 days is the **pickup deadline**, not a wait — if it passes, the hold expires (A3.3d) |
-| A3.3c | No copies free → click **Join waitlist** | Reservation inserted `status='waiting'` with next `position`; toast with queue number. Queue rules are unchanged: positions renumber on every release and the first waiter is promoted on return. The 3-day pickup window starts when a copy comes back |
+| A3.3a | Copies free → click **Borrow today** | **Issue it at the desk, no window.** Copy → `reserved`, reservation created `status='requested'` with `ready_at = NULL`; toast *"Sent to the library desk - collect your book today"*; staff alert *"Borrow request"*; student notice *"… set aside for you - collect it at the desk today."* The request sits in the staff **Requests** list until it is processed. Refused first when the student already has this title out (A3.4b) |
+| A3.3b | Copies free → click **Reserve** | **Instant hold, no queue.** Reservation created `status='ready'` with `position = NULL`, that copy set to `reserved`, `ready_at = today + 3`; toast *"Ready for pickup by {date}"*; staff notice *"… held at shelf X for {name}"*. The 3 days is the **pickup deadline**, not a wait — if it passes, the hold expires (A3.3d). Refused first when the student already has this title out (A3.4b) |
+| A3.3c | No copies free → click **Join waitlist** | Reservation inserted `status='waiting'` with next `position`; toast with queue number. Queue rules are unchanged: positions renumber on every release and the first waiter is promoted on return. The 3-day pickup window starts when a copy comes back. Refused first when the student already has this title out (A3.4b) |
 | A3.3d | Pickup window expires (`ready_at < today`) | The next overdue scan deletes the hold, notifies *"Hold expired — … was not picked up by {date}. The copy has been returned to the shelf."*, and hands the copy to the next waiting student (or returns it to `available`) |
 | A3.3e | You show up at the desk | The staff processes your row in **Requests**; `checkout()` accepts the held copy, creates the loan and consumes the request/hold |
 | A3.4 | Already in queue | Button becomes **In queue #n** or **Pick up by {date}** and links to *Reservations* |
+| A3.4b | **Title already on loan to you** | Button becomes **Borrowed - due {date}** and links to *Reservations*; **Borrow today**, **Reserve** and **Join waitlist** all refuse with *"You already have this title out - due {date}"* while any copy of that title is `active` or `overdue` for that student. Return it and the title borrows normally again |
 | A3.5 | Not eligible (blocked / limit reached) | Button is disabled (grey) |
 | A3.6 | Gold rail shows queue info | `n waiting • Estimated availability: {date}` with a large position number |
 | A3.7 | **Notify me by PDM email and app ›** | Informational line about notification delivery |
@@ -327,7 +328,7 @@ Accessed from the link **New student? Create an account** under the sign-in butt
 
 | Step | Action | System response |
 |---|---|---|
-| A5.1 | Sidebar **Reservations ⚑** | Panel **Active reservations (n)**, sub *"One active reservation per title"*; rows sorted **Borrow requested → Ready for pickup → Waiting**; empty state *"You are not waiting on any title. Open the catalog and join a waitlist."* |
+| A5.1 | Sidebar **Reservations ⚑** | Panel **Active reservations (n)**, sub *"One active reservation per title, one copy of a title out at a time"*; rows sorted **Borrow requested → Ready for pickup → Waiting**; empty state *"You are not waiting on any title. Open the catalog and join a waitlist."* |
 | A5.1b | Right column **How the waitlist works** | 1 *Join the queue* — one active reservation per title · 2 *Watch your position* — returns automatically advance the queue · 3 *Pick up promptly* — you have 3 days once notified |
 | A5.2 | Borrow-today row | Pill **Borrow requested**, right meta *Today / Waiting for the desk*; **Cancel** withdraws it and frees the copy |
 | A5.3 | Waiting row | Pill **Waiting**, position `#n`, note *Waiting in queue* |
@@ -367,7 +368,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | B1.6 | After processing | The row disappears; `loans`, `copies`, `transactions`, `notifications` updated; `release_hold()` re-matches anything left on that title (next waiter promoted, or the copy freed) |
 | B1.7 | **Recent transactions** panel | TIME / STUDENT / NAME / PROGRAM / SECTION / ITEM / TYPE / PROCESSED BY / STATUS — rendered under every tab. Rows use the size-9 `PDM.SmallTreeview` style so long names and programs fit, and a horizontal scrollbar appears when the panel is narrower than the table |
 
-**Eligibility gate applied at B1.5** (`eligibility()`): account exists → account `active` → **0 overdue items** → fewer than **5** active loans. It runs again at processing time, so a student blocked after submitting is refused with the reason shown.
+**Eligibility gate applied at B1.5** (`eligibility()`): account exists → account `active` → **0 overdue items** → fewer than **5** active loans. It runs again at processing time, so a student blocked after submitting is refused with the reason shown. `checkout()` also refuses (*"Already holds this title"*) when that student already has an `active`/`overdue` loan on the same title, so a stale or double-processed request can never stack a second copy of one title.
 
 **Withdrawals.** A student can cancel any row (borrow request or hold) from **Reservations → Cancel** before it is processed — see A5.5.
 
@@ -399,7 +400,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | Step | Action | System response |
 |---|---|---|
 | B4.1 | Sidebar **Catalog ☰** | Same search and filters, but the action button is **View record** instead of Reserve/Join waitlist |
-| B4.2 | In *Book details*, staff see **Open in circulation** | Jumps to the Circulation workspace |
+| B4.2 | In *Book details*, staff see **Open in circulation** and a **RESERVED BY** column on *Copies & availability* (after ACCESSION NO.) naming the student behind every Reserved / Pickup-hold row, paired to holds in pickup-time order; students keep the original four columns without other students' names | Jumps to the Circulation workspace |
 | B4.3 | Sidebar **Transactions ≣** | **Show** filter: All / Checkout / Return / Renewal, **Refresh** button |
 | B4.4 | Table | TIME / STUDENT / NAME / PROGRAM / SECTION / ITEM / BOOK NAME / TYPE / PROCESSED BY / STATUS / NOTE (up to 300 rows). Rows use the size-9 `PDM.SmallTreeview` style and **BOOK NAME** is widened so typical titles fit at full window width; a horizontal scrollbar reveals anything wider than the panel |
 
