@@ -427,7 +427,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 |---|---|---|
 | C2.1 | Sidebar **Inventory ▥** | Search box (filters on key release), category dropdown *All categories*, live counter *"Showing n of m catalog records • Last inventory sync h:mm AM"*; card title **All catalog records**, sub *"Search by accession, title or category"* |
 | C2.2 | Table | ACCESSION / TITLE / AUTHOR / CATEGORY / SHELF / COPIES / STATUS (`● Available`, `● Checked out`, `● Reserved`) |
-| C2.3 | **+ Add book** | Dialog *Add to the catalog* |
+| C2.3 | **+ Add book** | Dialog *Add to the catalog* — resizable and scrollable, so all ten fields, the copies box and **Save to catalog** stay reachable on short screens |
 | C2.4 | Fill Title (required), Author, Subject, Category, Publisher, Edition, Publication year, ISBN, Call number, Shelf, Number of copies | Title missing → *"A title is required."*; author defaults to *Unknown*, subject/category to *General*, shelf to `STK-01` |
 | C2.5 | **Save to catalog** | One `books` row + `n` `copies` rows with generated accessions `PDM-01xxxx`; toast *"Catalog updated — {title} added with n copy(s)."* |
 

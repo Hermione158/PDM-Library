@@ -3955,10 +3955,16 @@ class InventoryScreen(tk.Frame):
         win = tk.Toplevel(self)
         win.title("Add book")
         win.configure(bg=WHITE)
-        win.geometry("460x560")
+        win.geometry("480x680")
+        win.minsize(420, 480)
         win.transient(self.winfo_toplevel())
-        form = tk.Frame(win, bg=WHITE)
-        form.pack(fill="both", expand=True, padx=26, pady=22)
+
+        # ScrollFrame keeps all ten fields, the copies box and Save reachable on
+        # short screens; a plain pack pushed Save to catalog off the bottom.
+        scroll = ScrollFrame(win, bg=WHITE)
+        scroll.pack(fill="both", expand=True)
+        form = tk.Frame(scroll.body, bg=WHITE)
+        form.pack(fill="x", padx=26, pady=22)
         tk.Label(form, text="Add to the catalog", bg=WHITE, fg=INK,
                  font=tkfont.Font(family=HEAD, size=18, weight="bold")).pack(
             anchor="w", pady=(0, 16))
@@ -3983,6 +3989,11 @@ class InventoryScreen(tk.Frame):
         tk.Entry(form, textvariable=copies_var, bg=WHITE, fg=INK,
                  relief="flat", highlightthickness=1, highlightbackground=LINE,
                  font=(BODY, 11), bd=6).pack(fill="x", pady=(4, 16))
+
+        # the canvas must request the form's full width or the fields squeeze;
+        # the idle pass makes winfo_reqwidth() current
+        win.update_idletasks()
+        scroll.canvas.configure(width=form.winfo_reqwidth() + 52)
 
         # validates the dialog and inserts the book row plus its copies.
         def save():
