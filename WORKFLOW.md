@@ -364,7 +364,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | B1.2 | **Borrow today (n)** card, sub *"Students waiting for the desk to issue their books"* | One row per `status='requested'` reservation: title, *name • student number*, *accession • shelf X*, **Requested {date}**, pill **Borrow today**, **Process** button. Empty state: *"No borrow requests waiting."* |
 | B1.3 | **Reservations awaiting pickup (n)** card, sub *"Held at the desk - the pickup window lasts 3 days"* | One row per `status='ready'` reservation: same fields plus **Pick up by {date}**, pill **Ready for pickup**, **Process**. Empty state: *"Nothing waiting for pickup."* |
 | B1.4 | **How processing works** (side rail) | Three numbered steps, then the gold **WAITING AT THIS DESK** box — `{n} borrow • {n} pickup` |
-| B1.5 | Click **Process** on a row | `held_copy()` picks the reserved, unloaned copy of that title and passes it to `checkout()` with the requesting student → toast *"Request processed — {name} — Due {date}"*. If the student became ineligible or the copy is gone → warning box with the reason |
+| B1.5 | Click **Process** on a row | **Confirmation dialog** *Process request* names the action — *"Issue this borrow-today request?"* for a `requested` row, *"Hand over this pickup hold?"* for a `ready` row — then the title, the student `name • student number`, and the `accession • shelf X`. **No** closes it and nothing is written; **Yes** calls `held_copy()` and passes it to `checkout()` with the requesting student → toast *"Request processed — {name} — Due {date}"*. If the student became ineligible or the copy is gone → warning box with the reason (that warning appears *before* the confirmation, so you are never asked about a request that cannot be processed) |
 | B1.6 | After processing | The row disappears; `loans`, `copies`, `transactions`, `notifications` updated; `release_hold()` re-matches anything left on that title (next waiter promoted, or the copy freed) |
 | B1.7 | **Recent transactions** panel | TIME / STUDENT / NAME / PROGRAM / SECTION / ITEM / TYPE / PROCESSED BY / STATUS — rendered under every tab. Rows use the size-9 `PDM.SmallTreeview` style so long names and programs fit, and a horizontal scrollbar appears when the panel is narrower than the table |
 
@@ -379,7 +379,8 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | Step | Action | System response |
 |---|---|---|
 | B2.1 | Tab **↙ Return** | Panel **1. Scan the accession** — *Enter the barcode of the book being returned* |
-| B2.2 | Accession + **Process return** (or Enter) | `return_book()` closes the loan (`status='returned'`, `return_date=today`); toast *"Return processed — {title} — {message}"* |
+| B2.2 | Accession + **Process return** (or Enter) | **Confirmation dialog** *Process return* — *"Return this book?"* followed by the book title, the accession, and, when the copy is on loan, *"Borrowed by {name} ({student number})"*. **No** closes it: nothing is written and the accession stays in the field for a retry; **Yes** runs `return_book()`, which closes the loan (`status='returned'`, `return_date=today`) → toast *"Return processed — {title} — {message}"* |
+| B2.2b | Unknown accession | The confirmation still appears showing just the typed barcode; **Yes** then produces the usual *Accession not found* warning from `return_book()` |
 | B2.3 | Failure cases | *Accession not found*; *No active loan for this copy*; *"Copy is held for pickup, not on loan"* → warning box with pill **Check again** |
 | B2.4 | Success + someone waiting | First waiter promoted: reservation → `ready` with `ready_at = today+3`, copy stays `reserved`, notices to the student and staff; remaining positions renumbered. If nobody waits, the copy returns to `available` |
 | B2.4b | Any pending SDO case for that loan | Automatically marked `acknowledged` with `resolved_at = today`, so the escalation register clears when the book comes back |
@@ -672,6 +673,7 @@ sequenceDiagram
 | Reservation uniqueness | one per student per title (`UNIQUE(book_id,user_id)`) | `reserve()`, `request_borrow()` |
 | Reminder window | 1 day before due, plus the due date itself | `run_overdue_scan()` |
 | Overdue scan interval | 60 000 ms | `App.tick()` |
+| **Desk confirmation** | Issuing a request / pickup hold and processing a return each raise a `messagebox.askyesno` showing title, student, accession and shelf (**No** = no write) | `CirculationScreen.process_request()`, `CirculationScreen.do_return()` |
 
 **Status vocabularies**
 
@@ -706,8 +708,8 @@ Run once from a fresh launch (delete `library.db` first if you want the seeded d
 | 3d | Staff (later) | Wait 3 days (or edit `ready_at` in `library.db` to yesterday), then sign in — the 60 s scan fires | Warn toast *"Hold expired"*; the student's notification reads *"… was not picked up by {date}"*; the copy is back on the shelf or handed to the next waiter |
 | 4 | Student | Sidebar **My loans** | Four stat cards; `0 of 5 books`; *Account in good standing* |
 | 5 | Staff | Sign out → **◎ Staff** tab → `staff` / `pdmstaff` | Circulation workspace opens on **↗ Requests** |
-| 6 | Staff | **Process** the top row of **Borrow today (n)** | Toast *"Request processed — {name} — Due {today+3}"*; the row disappears and the accession appears in *Recent transactions* |
-| 7 | Staff | Tab **↙ Return**, scan the accession issued in step 6 → **Process return** | Toast *"Return processed"*; if someone was queued, they are promoted to *Ready for pickup* |
+| 6 | Staff | **Process** the top row of **Borrow today (n)** → confirm **Process request** → **Yes** | Toast *"Request processed — {name} — Due {today+3}"*; the row disappears and the accession appears in *Recent transactions*. (Choose **No** first to see the confirmation with title, student and shelf, and nothing is written) |
+| 7 | Staff | Tab **↙ Return**, scan the accession issued in step 6 → **Process return** → confirm **Process return** → **Yes** | Toast *"Return processed"*; if someone was queued, they are promoted to *Ready for pickup*. (Choose **No** to cancel — the accession stays in the field and the loan is untouched) |
 | 8 | Student | Sign in as `2024-01842` / `03152005` → bell | Unread badge shows the pickup / reminder notices; **Mark all read** clears it |
 | 9 | Student | **My loans** → **↻ Renew eligible books** | Toast *"Renewals processed — 1 loan(s) extended."*; the other two rows are skipped with *"Too early to renew - due in n days"* because only the loan due tomorrow is inside the 1-day window |
 | 10 | Admin | Sign out → **◉ Administrator** → `admin` / `pdmadmin` | Dashboard with five KPI cards, weekly chart, escalation buckets, notifications |
