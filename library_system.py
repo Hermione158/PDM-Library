@@ -324,8 +324,23 @@ def tree(parent, columns, widths, height=8, style="PDM.Treeview"):
     sty.configure("PDM.SmallTreeview.Heading", background=CREAM_DEEP,
                   foreground=MUTED, font=(BODY, 9, "bold"), relief="flat",
                   padding=6)
+    # PDM.Spot.SmallTreeview — audit-table variant whose SELECTED row paints
+    # maroon in BOTH the focused and unfocused states. The clam default loses
+    # its highlight when the widget loses focus, which makes a marked record
+    # impossible to follow; this map keeps the bookmark visible either way.
+    sty.configure("PDM.Spot.SmallTreeview", background=WHITE,
+                  fieldbackground=WHITE, foreground=INK, rowheight=30,
+                  font=(BODY, 9), borderwidth=0, relief="flat")
+    sty.configure("PDM.Spot.SmallTreeview.Heading", background=CREAM_DEEP,
+                  foreground=MUTED, font=(BODY, 9, "bold"), relief="flat",
+                  padding=6)
+    sty.map("PDM.Spot.SmallTreeview",
+            background=[("selected", MAROON)],
+            foreground=[("selected", WHITE)])
     sty.layout("PDM.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
     sty.layout("PDM.SmallTreeview", [("Treeview.treearea", {"sticky": "nswe"})])
+    sty.layout("PDM.Spot.SmallTreeview",
+               [("Treeview.treearea", {"sticky": "nswe"})])
     tv = ttk.Treeview(parent, columns=columns, show="headings",
                       style=style, height=height)
     for col, w in zip(columns, widths):
@@ -339,6 +354,50 @@ def attach_scroll(tv, parent):
     sb = ttk.Scrollbar(parent, orient="vertical", command=tv.yview)
     tv.configure(yscrollcommand=sb.set)
     return sb
+
+
+# spotlight(tv) — click-to-highlight bookmark for the staff audit tables.
+# PURELY VISUAL: it marks a row so staff can follow one record; it performs no
+# action, opens nothing and writes nothing. Pair it with
+# style="PDM.Spot.SmallTreeview" so the mark keeps the maroon fill after the
+# table loses focus (a plain ttk selection greys out and is easy to lose).
+def spotlight(tv):
+    tv.configure(selectmode="browse")   # one marked record at a time
+    tv.tag_configure("spot", background=MAROON_SOFT, foreground=MAROON)
+    busy = False
+
+    # _mark(row) — moves the "spot" tag + native selection onto one row.
+    # Anything not currently marked loses its tag first. Guarded by `busy`
+    # because selection_set() re-fires <<TreeviewSelect>>.
+    def _mark(row):
+        nonlocal busy
+        if not row or busy:
+            return
+        busy = True
+        try:
+            for other in tv.tag_has("spot"):
+                if other != row:
+                    kept = [t for t in tv.item(other, "tags") if t != "spot"]
+                    tv.item(other, tags=kept)
+            if "spot" not in tv.item(row, "tags"):
+                tv.item(row, tags=[*tv.item(row, "tags"), "spot"])
+            if tv.selection() != (row,):
+                tv.selection_set(row)
+        finally:
+            busy = False
+
+    # _pick(event) — mouse: identify the clicked row. A click on empty space
+    # below the rows resolves to "" and is ignored, so the mark stays put.
+    def _pick(event):
+        _mark(tv.identify_row(event.y))
+
+    # keeps the mark in step with keyboard navigation.
+    def _focus(event=None):
+        _mark(tv.focus())
+
+    tv.bind("<ButtonRelease-1>", _pick)
+    tv.bind("<<TreeviewSelect>>", _focus)
+    return tv
 
 
 # =====================================================================
@@ -3838,7 +3897,9 @@ class CirculationScreen(tk.Frame):
 
     # Small type plus h-scroll keeps long names and programs readable.
     # METHOD: recent(self, main)
-    # Logic: side panel with the newest circulation transactions.
+    # Logic: newest circulation events; spotlight() makes each row click-to-
+    # highlight so staff can track one record. Rebuilt on every render(), so
+    # the mark starts fresh each time the desk switches tab.
     def recent(self, main):
         panel = card(main, pad=0)
         panel.pack(fill="x", pady=(16, 0))
@@ -3850,13 +3911,14 @@ class CirculationScreen(tk.Frame):
         tv = tree(holder, ["TIME", "STUDENT", "NAME", "PROGRAM", "SECTION",
                            "ITEM", "TYPE", "PROCESSED BY", "STATUS"],
                   [60, 70, 126, 188, 66, 78, 62, 110, 90],
-                  height=len(rows) or 1, style="PDM.SmallTreeview")
+                  height=len(rows) or 1, style="PDM.Spot.SmallTreeview")
         for r in rows:
             tv.insert("", "end", values=(
                 tx_time(r["ts"]), r["username"] or "-", r["name"] or "-",
                 r["program"] or "-", r["section"] or "-",
                 r["accession"] or "-", r["type"], r["staff"] or "-",
                 r["status"]))
+        spotlight(tv)   # click a row to highlight it — visual bookmark only
         hsb = ttk.Scrollbar(holder, orient="horizontal", command=tv.xview)
         hsb.pack(side="bottom", fill="x")
         tv.configure(xscrollcommand=hsb.set)
@@ -3874,7 +3936,9 @@ class CirculationScreen(tk.Frame):
 # Purpose: Read-only audit log of every circulation event with a type filter
 #          (All / Checkout / Return / Renewal) and a Refresh button.
 # Logic:   load() -> recent_transactions() (reads D6 `transactions`, up to 300
-    #          rows); uses the compact PDM.SmallTreeview style + h-scrollbar.
+    #          rows); uses the compact PDM.Spot.SmallTreeview style + h-scrollbar.
+#          spotlight() makes each row click-to-highlight (visual bookmark only —
+#          it runs no action and writes nothing; a Refresh clears the mark).
 # =====================================================================
 class TransactionsScreen(tk.Frame):
     # METHOD: __init__(self, shell)
@@ -3908,10 +3972,11 @@ class TransactionsScreen(tk.Frame):
         holder.pack(fill="both", expand=True, pady=(14, 0))
         body = tk.Frame(holder, bg=WHITE)
         self.tv = tree(body, ["TIME", "STUDENT", "NAME", "PROGRAM",
-                              "SECTION", "ITEM", "BOOK NAME", "TYPE",
-                              "PROCESSED BY", "STATUS", "NOTE"],
-                       [60, 70, 126, 188, 66, 78, 330, 62, 110, 90, 170],
-                       height=14, style="PDM.SmallTreeview")
+                               "SECTION", "ITEM", "BOOK NAME", "TYPE",
+                               "PROCESSED BY", "STATUS", "NOTE"],
+                        [60, 70, 126, 188, 66, 78, 330, 62, 110, 90, 170],
+                        height=14, style="PDM.Spot.SmallTreeview")
+        spotlight(self.tv)   # click a row to highlight it — visual bookmark only
         hsb = ttk.Scrollbar(holder, orient="horizontal",
                             command=self.tv.xview)
         hsb.pack(side="bottom", fill="x")
@@ -4409,20 +4474,31 @@ class UsersScreen(tk.Frame):
 #          Pending rows carry a "Mark acknowledged" button.
 # Logic:   ack() -> sdo_cases.status='acknowledged' + resolved_at=today,
     #          then announce_case_closed() writes the system-wide notice and
-#          ack_guidance() explains what still restricts the student.
+    #          ack_guidance() explains what still restricts the student.
 # Objects: built by Shell.navigate("cases"); Toast + messagebox on ack.
+#          The whole screen sits in a ScrollFrame (see __init__) so a long
+#          register scrolls instead of clipping past the window bottom.
 # =====================================================================
 class CasesScreen(tk.Frame):
     # METHOD: __init__(self, shell)
     # Logic: Constructor — four escalation counters + the register table.
+    #        Everything is built inside a ScrollFrame so a long register stays
+    #        reachable on short windows instead of clipping off-screen.
     def __init__(self, shell):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
         self.db = shell.db
         self.pack(fill="both", expand=True)
 
+        # OBJECT ScrollFrame — scrollable host; the register can grow past the
+        # window height, so the counters, rows and gold note all live in
+        # scroll.body and scroll together.
+        scroll = ScrollFrame(self, bg=CREAM)
+        scroll.pack(fill="both", expand=True)
+        host = scroll.body
+
         esc = escalation_buckets(self.db)
-        cards = tk.Frame(self, bg=CREAM)
+        cards = tk.Frame(host, bg=CREAM)
         cards.pack(fill="x")
         stat_card(cards, "1 day overdue", esc["warn"], "Final warning",
                   "✉", AMBER_FG)
@@ -4433,7 +4509,7 @@ class CasesScreen(tk.Frame):
         stat_card(cards, "SDO acknowledged", esc["acknowledged"],
                   "Under student affairs", "✓", BLUE_FG)
 
-        panel = card(self, pad=0)
+        panel = card(host, pad=0)
         panel.pack(fill="both", expand=True, pady=(16, 0))
         section_title(panel.inner, "Escalation register",
                       sub="Overdue records forwarded to the Student "
