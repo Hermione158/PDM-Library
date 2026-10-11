@@ -233,7 +233,7 @@ flowchart TB
 | D5 | `reservations` | `book_id`, `user_id`, `position`, `status` (`requested`/`waiting`/`ready`), `created_at`, `ready_at`, `UNIQUE(book_id,user_id)` | Borrow requests, hold queue and pickups per title |
 | D6 | `transactions` | `ts`, `user_id`, `copy_id`, `type` (`Checkout`/`Return`/`Renewal`), `staff_id`, `status`, `note` | Audit log; drives charts and tables |
 | D7 | `notifications` | `user_id` (NULL = system-wide), `title`, `body`, `level` (`info`/`warn`/`error`), `kind`, `dedupe` UNIQUE, `ts`, `read` | In-app message centre + bell badge |
-| D8 | `sdo_cases` | `loan_id`, `user_id`, `reason`, `status` (`pending`/`acknowledged`), `created_at`, `resolved_at` | Disciplinary escalation register |
+| D8 | `sdo_cases` | `loan_id`, `user_id`, `reason`, `status` (`pending`/`acknowledged`), `created_at`, `resolved_at`, `closed_by` (`return`/`sdo`, NULL = closed before the column existed) | Disciplinary escalation register |
 | D9 | `settings` | `key`, `value` | Tunables: `loan_days`, `book_limit`, `max_renewals`, `hold_days`, `sdo_after`, `renew_window` (re-seeded from the constants on every launch) |
 
 ### 5.2 Important flow data elements
@@ -314,7 +314,7 @@ Accessed from the link **New student? Create an account** under the sign-in butt
 | Step | Action | System response |
 |---|---|---|
 | A4.1 | Sidebar **My loans ▤** | Four stat cards: *Active loans* (n of 5), *Due soon*, *Reservations*, *Account status* |
-| A4.2 | Due in 1 day or due today | Gold banner: *"… is due tomorrow / is due today"* plus *"Return it by 7:00 PM or renew now if no one is waiting."* and a **Renew book** button |
+| A4.2 | Due in 1 day or due today | Gold banner: *"… is due tomorrow / is due today"* plus *"Return it by 5:00 PM or renew now if no one is waiting."* and a **Renew book** button |
 | A4.3 | **Current loans (n)** card | Each row: cover, title, author, call number, CHECKED OUT date, DUE DATE, status pill (*Due today* / *Due tomorrow* / *Due in n days* / *On time* / *Overdue n days*); footer note *"Books may be renewed up to 3 times when no reservation exists, from 1 day before the due date."* Empty state: *"No active loans. Browse the catalog to borrow a title."* |
 | A4.4 | Click **Renew** on a row | `renew_loan()` sets `due_date = today + 3`, `renewals + 1`, `status='active'`, logs a `Renewal` transaction and notifies *"Loan renewed"*; refused with `Renewal limit reached (3)`, `Overdue items cannot be renewed`, `Too early to renew - due in n days (renewals open 1 day before the due date)` or `Another student is waiting for this title` |
 | A4.5 | Click **↻ Renew eligible books** | Renews every eligible loan; toast *"Renewals processed — n loan(s) extended."*; skipped titles listed in an info box — includes loans still outside the 1-day renewal window |
@@ -420,7 +420,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | C1.3 | **Weekly circulation** chart | Bar chart of loans and returns for the last 7 days + *"n transactions recorded"* |
 | C1.4 | **Overdue & SDO escalation** card | Buckets: 1 day overdue (*Final warning*), 2+ days overdue (*Restricted + SDO*), SDO pending review (*Awaiting acknowledgment*), SDO acknowledged (*Under student affairs*) |
 | C1.5 | **Notifications** card | Latest 7 system-wide notices (`user_id IS NULL`) — escalations, borrow requests, hold notices and *SDO case acknowledged* closures |
-| C1.6 | **⇩ Export report** (header) | Writes `library_report.txt` (stats + full inventory) → confirmation with the file path |
+| C1.6 | **⇩ Export report** (header) | Writes `library_report.txt` — stats, full inventory, **and an `SDO cases:` section** listing every case as `SDO-nnn  name (number)  title  due {date}  n day(s) overdue  Pending | Acknowledged {date} on return | … after SDO compliance` → confirmation with the file path |
 
 ### C.2 Inventory
 
@@ -437,7 +437,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | Step | Action | System response |
 |---|---|---|
 | C3.1 | Sidebar **Users ◉** | Table ID / NAME / ROLE / PROGRAM / ON LOAN / OVERDUE / STATUS (`● Active`, `● Blocked`) |
-| C3.2 | **Double-click a row** | Confirmation *"Block the account of {name}?"* (or reinstate) → `users.status` updated, table refreshed |
+| C3.2 | **Double-click a row** | Confirmation *"Block the account of {name}?"* (or reinstate) → `users.status` updated, table refreshed. **Reinstate warning:** when reinstating an account that still has books `sdo_after`+ days overdue, the same dialog appends *"Warning: n book(s) are still X+ day(s) overdue. The account will be blocked again at the next automatic scan. Reinstate anyway?"* — declining aborts |
 | C3.3 | Double-click an administrator | Refused: *"Administrators cannot be blocked."* |
 | C3.4 | Effect of blocking | Sign-in still possible (see §13), but `eligibility()` returns *"Account is blocked"* so checkout and reservation are refused |
 
@@ -447,7 +447,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 |---|---|---|
 | C4.1 | Sidebar **SDO cases ⚑** | Screen *Overdue & SDO escalation* |
 | C4.2 | Four counters | 1 day overdue, 2+ days overdue, SDO pending, SDO acknowledged |
-| C4.3 | **Escalation register** | Rows: student, program, title, due date, days overdue, pill *Pending* / *Acknowledged*. The whole screen sits in a `ScrollFrame`, so a long register (many cases in one day) scrolls with the wheel or the scrollbar instead of being clipped; the four counters stay pinned above it and scroll with the content |
+| C4.3 | **Escalation register** | Rows: student, program, title, due date, days overdue, pill *Pending* / *Acknowledged*. Acknowledged rows also show **how** they closed — *"Closed {date} on return"* (the book came back) or *"Closed {date} after SDO compliance"* (staff acknowledged); rows closed before the `closed_by` column existed show a plain *"Closed {date}"*. The whole screen sits in a `ScrollFrame`, so a long register (many cases in one day) scrolls with the wheel or the scrollbar instead of being clipped; the four counters stay pinned above it and scroll with the content |
 | C4.4 | Click **Mark acknowledged** (pending rows) | `sdo_cases.status='acknowledged'`, `resolved_at` set → row shows *"Closed {date}"*; `announce_case_closed()` writes a system-wide *"SDO case acknowledged — Case SDO-00n for {name} … was closed after SDO compliance"* that appears on the Dashboard **Notifications** card and in the bell, and `refresh_bell()` updates the badge immediately; then `ack_guidance()` opens a **Case acknowledged** dialog saying what still restricts the student — *"…still has n overdue book(s) out, so the account stays blocked. Once the books are returned, reinstate the account on Users (double-click the row)."* while books are out, *"All books are back. Reinstate the account on Users …"* when the account is still blocked with nothing overdue, or *"The account is active - borrowing is restored."* when clear (plus a *remaining pending cases* clause when applicable). Acknowledged rows in the register repeat the remaining restriction inline |
 | C4.5 | Gold note | *"Overdue records are escalated automatically after 2 day(s) past the due date, when the account is also restricted, in place of financial penalties."* |
 
@@ -636,15 +636,15 @@ sequenceDiagram
 | 2 | Every 60 s (`after(2000)` then `after(60000, tick)`) | `tick()` → `run_overdue_scan(db)` | New alerts produce a warn toast and refresh the bell badge; failures are swallowed silently |
 | 3 | Every sign-in / sign-up (`open_shell`) | `run_overdue_scan(db)` | Refreshes state for the new session |
 | 4 | Loan 1 day from due | Reminder notice `Return reminder` | *"… is due tomorrow."* Deduped by `due-tomorrow:{loan_id}` |
-| 4b | Loan due today | `Due today` notice | *"… return it by 7:00 PM…"* Deduped by `due-today:{loan_id}` |
+| 4b | Loan due today | `Due today` notice | *"… return it by 5:00 PM…"* Deduped by `due-today:{loan_id}` |
 | 5 | Loan past due date | `loans.status='overdue'`, `Item overdue` to the student, `Overdue alert` to staff | Deduped per day count |
 | 5b | 1 day overdue | `Final warning` to the student | *"… return it today - tomorrow your account is restricted…"*; deduped by `finalwarn:{loan_id}` |
 | 6 | Overdue ≥ 2 days | Automatic `sdo_cases` row + `SDO escalation` notice **and** `users.status='blocked'` + `Account restricted` notice | Case once per loan (`sdo:{loan_id}`); block re-applied each scan until lifted by the admin; notice deduped by `restricted:{loan_id}` |
 | 7 | Return of a copy with a queue | Waiter promoted to `ready`, others renumbered | Student + staff notified |
 | 8 | Reservation cancellation | Reservation deleted, then `release_hold()` re-matches copies: the next waiter inherits the freed copy, otherwise it returns to `available`; `requeue()` renumbers positions | Queue stays contiguous |
 | 9 | **Hold past its pickup deadline** (`ready_at < today`) | `release_expired_holds()` deletes the reservation, notifies *"Hold expired"*, then `release_hold()` hands the copy to the next waiter or frees it | Deadline day itself stays valid |
-| 10 | Return of a copy with a pending SDO case | `sdo_cases.status='acknowledged'`, `resolved_at=today`, plus the same closure notice | Escalation closes with the return **and announces it system-wide**; **`users.status` stays `blocked` until the admin lifts it** |
-| 10b | Admin clicks **Mark acknowledged** | `announce_case_closed(db, case_id, "after SDO compliance")` → system-wide notice + `refresh_bell()` | *"SDO case acknowledged"* lands on the Dashboard feed and the bell badge; deduped by `sdoack:{case_id}` |
+| 10 | Return of a copy with a pending SDO case | `sdo_cases.status='acknowledged'`, `resolved_at=today`, **`closed_by='return'`**, plus the same closure notice | Escalation closes with the return **and announces it system-wide**; the register reads *"Closed {date} on return"*; **`users.status` stays `blocked` until the admin lifts it** |
+| 10b | Admin clicks **Mark acknowledged** | `closed_by='sdo'` + `announce_case_closed(db, case_id, "after SDO compliance")` → system-wide notice + `refresh_bell()`; refuses if the case is missing or not `pending` | *"SDO case acknowledged"* lands on the Dashboard feed and the bell badge; deduped by `sdoack:{case_id}`; the register reads *"Closed {date} after SDO compliance"* |
 | 11 | Any notification insert | `dedupe` UNIQUE key | Repeats of the same event do not duplicate messages |
 
 ---
@@ -666,6 +666,9 @@ sequenceDiagram
 | Restriction | `users.status='blocked'` set automatically at the escalation threshold; lifted only by the admin (**Users**) | `run_overdue_scan()`, `eligibility()` |
 | Unlock path | Student complies with the SDO → admin sees it → **Cases → Mark acknowledged** → **Users → double-click** to unblock | `sdo_cases.status`, admin screens |
 | Case closure announced | Every closure writes one system-wide *"SDO case acknowledged"* notice (admin click **or** return of the book) | `announce_case_closed()` → `notify(db, None, …)` |
+| Case close reason | `sdo_cases.closed_by` records **how** a case closed — `'return'` (auto, on the book's return) or `'sdo'` (manual acknowledge); NULL for rows closed before the column existed | `return_book()`, `CasesScreen.ack()`; rendered in the register and the exported report |
+| Manual acknowledge guard | **Mark acknowledged** refuses a case that is missing or not `pending`, leaving `resolved_at` untouched | `CasesScreen.ack()` |
+| Reinstate warning | Reinstating an account that still has books `sdo_after`+ days overdue warns that the scan will re-block it | `UsersScreen.toggle_status()` → `askyesno` |
 | Overdue / blocked account | **Any** overdue item, or `users.status='blocked'` | `eligibility()` → *"n overdue item(s) - resolve with the librarian"* / *"Account is blocked"*; gates `reserve()`, `request_borrow()` and `checkout()` |
 | Student number format | `\d{4}-\d{6}` (older 5-digit numbers still sign in) | `attempt_signup()` |
 | Student section | Must be one of A, B, C, D (no default — must be picked) | `attempt_signup()` |
@@ -715,7 +718,7 @@ Run once from a fresh launch (delete `library.db` first if you want the seeded d
 | 10 | Admin | Sign out → **◉ Administrator** → `admin` / `pdmadmin` | Dashboard with five KPI cards, weekly chart, escalation buckets, notifications |
 | 11 | Admin | **Inventory → + Add book** → fill Title, set 2 copies → **Save to catalog** | Toast *"Catalog updated — … added with 2 copy(s)."*; table shows `2 / 2` available |
 | 12 | Admin | **Users** → double-click a student → confirm | Status flips to `● Blocked`; double-clicking an admin is refused |
-| 13 | Admin | **⇩ Export report** | Confirmation pointing to `library_report.txt` with stats and inventory |
+| 13 | Admin | **⇩ Export report** | Confirmation pointing to `library_report.txt` with stats, inventory and the **SDO escalation register** (one line per case, including how each closed) |
 | 14 | Admin | **SDO cases** → click **Mark acknowledged** on a pending row | Pill changes to *Acknowledged*, row shows *"Closed {date}"* |
 | 15 | Student | Set one of `2024-01842`'s `loans.due_date` to **yesterday** in `library.db`, then sign in | 60 s scan: pill reads *Overdue 1 days*; notices *"Item overdue"* and *"Final warning"* — *return it today - tomorrow your account is restricted and this record is forwarded to the Student Disciplinary Office* |
 | 16 | Student | Move that same `due_date` two days back and sign in again | *"SDO escalation"* (staff) + *"Referred to the SDO"* + *"Account restricted"* (student); `users.status` becomes `blocked`, so *Borrow today* / *Reserve* refuse with *"Account is blocked"* |

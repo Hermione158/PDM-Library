@@ -729,7 +729,8 @@ CREATE TABLE IF NOT EXISTS sdo_cases (
     reason TEXT,
     status TEXT DEFAULT 'pending',
     created_at TEXT,
-    resolved_at TEXT
+    resolved_at TEXT,
+    closed_by TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -747,6 +748,14 @@ def init_db(db):
     if not any(row["name"] == "section"
                for row in db.conn.execute("PRAGMA table_info(users)")):
         db.run("ALTER TABLE users ADD COLUMN section TEXT DEFAULT ''")
+    # adds closed_by to databases created before that column existed. It
+    # records HOW a case closed — 'return' (the book came back) or 'sdo'
+    # (staff acknowledged). Left NULL on purpose for rows that were already
+    # acknowledged under the old schema: the true closer is not recoverable,
+    # so the register shows them without a qualifier rather than guessing.
+    if not any(row["name"] == "closed_by"
+               for row in db.conn.execute("PRAGMA table_info(sdo_cases)")):
+        db.run("ALTER TABLE sdo_cases ADD COLUMN closed_by TEXT")
     for key, value in (("renew_window", RENEW_WINDOW), ("loan_days", LOAN_DAYS),
                        ("sdo_after", SDO_AFTER)):
         db.run("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
@@ -1127,8 +1136,9 @@ def return_book(db, accession, staff):
     pending = [r["id"] for r in db.all(
         "SELECT id FROM sdo_cases WHERE loan_id=? AND status='pending'",
         (loan["id"],))]
-    db.run("UPDATE sdo_cases SET status='acknowledged', resolved_at=? WHERE "
-           "loan_id=? AND status='pending'", (iso(today()), loan["id"]))
+    db.run("UPDATE sdo_cases SET status='acknowledged', resolved_at=?, "
+           "closed_by='return' WHERE loan_id=? AND status='pending'",
+           (iso(today()), loan["id"]))
     for cid in pending:
         announce_case_closed(db, cid, "on return of the book")
     message = "Returned"
@@ -1276,7 +1286,7 @@ def run_overdue_scan(db, silent=True):
         if left == 0:
             if notify(db, loan["user_id"], "Due today",
                       f"{loan['title']} is due today - return it by "
-                      f"7:00 PM to stay in good standing.",
+                      f"5:00 PM to stay in good standing.",
                       "warn", f"due-today:{loan['id']}"):
                 new_alerts.append(("Due today", loan["title"]))
         if left < 0:
@@ -3136,7 +3146,7 @@ class LoansScreen(tk.Frame):
                      bg=GOLD_SOFT, fg="#6E5410",
                      font=tkfont.Font(family=BODY, size=11, weight="bold"),
                      anchor="w").pack(anchor="w")
-            tk.Label(txt, text="Return it by 7:00 PM or renew now if no one is "
+            tk.Label(txt, text="Return it by 5:00 PM or renew now if no one is "
                      "waiting.", bg=GOLD_SOFT, fg="#8A6A15", font=(BODY, 9),
                      anchor="w").pack(anchor="w")
             button(banner, "Renew book", lambda: self.renew(first["id"]),
@@ -4202,6 +4212,30 @@ class DashboardScreen(tk.Frame):
         for row in self.db.all(SELECT_BOOK + " ORDER BY b.id"):
             lines.append(f"  {acc(row['id'], 0)}  {row['title']}  "
                          f"{row['avail']}/{row['total']}  {book_status(row)}")
+        # SDO escalation register — the paper trail for the Student
+        # Disciplinary Office, including how each case was closed.
+        lines += ["", "SDO cases:"]
+        cases = self.db.all(
+            "SELECT s.*, u.username, u.name, b.title, l.due_date "
+            "FROM sdo_cases s JOIN users u ON u.id=s.user_id "
+            "JOIN loans l ON l.id=s.loan_id JOIN copies c ON c.id=l.copy_id "
+            "JOIN books b ON b.id=c.book_id "
+            "ORDER BY CASE s.status WHEN 'pending' THEN 0 ELSE 1 END, s.id DESC")
+        if not cases:
+            lines.append("  (none on record)")
+        for s in cases:
+            late = max(-days_until(s["due_date"]), 0)
+            if s["status"] == "pending":
+                state = "Pending"
+            else:
+                state = (f"Acknowledged {fmt_date(s['resolved_at'])}")
+                if s["closed_by"] == "return":
+                    state += " on return"
+                elif s["closed_by"] == "sdo":
+                    state += " after SDO compliance"
+            lines.append(f"  SDO-{s['id']:03d}  {s['name']} ({s['username']})"
+                         f"  {s['title']}  due {fmt_date(s['due_date'])}"
+                         f"  {late} day(s) overdue  {state}")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines))
         messagebox.showinfo("Export report", f"Report saved to:\n{path}",
@@ -4444,7 +4478,10 @@ class UsersScreen(tk.Frame):
                 "●  " + ("Active" if u["status"] == "active" else "Blocked")))
 
     # METHOD: toggle_status(self, event)
-    # Logic: flips the double-clicked account active ↔ blocked (admins exempt); see C3.2–C3.4.
+    # Logic: flips the double-clicked account active ↔ blocked (admins exempt);
+    #        reinstating warns when books are still sdo_after+ days overdue,
+    #        because run_overdue_scan() would re-block on its next 60 s pass;
+    #        see C3.2–C3.4 and §11 "Reinstate warning".
     def toggle_status(self, event):
         sel = self.tv.selection()
         if not sel:
@@ -4456,9 +4493,21 @@ class UsersScreen(tk.Frame):
                                 parent=self)
             return
         new = "blocked" if user["status"] == "active" else "active"
+        warn = ""
+        if new == "active":
+            # still escalated? the scan re-applies 'blocked' within a minute
+            threshold = setting(self.db, "sdo_after", SDO_AFTER)
+            deep = sum(1 for r in self.db.all(
+                "SELECT due_date FROM loans WHERE user_id=? AND status IN "
+                "('active','overdue')", (uid,))
+                if -days_until(r["due_date"]) >= threshold)
+            if deep:
+                warn = (f"\n\nWarning: {deep} book(s) are still {threshold}+ "
+                        f"day(s) overdue.\nThe account will be blocked again at "
+                        f"the next automatic scan. Reinstate anyway?")
         if not messagebox.askyesno("Users",
                                    f"{new.title()} the account of "
-                                   f"{user['name']}?", parent=self):
+                                   f"{user['name']}?{warn}", parent=self):
             return
         self.db.run("UPDATE users SET status=? WHERE id=?", (new, uid))
         self.load()
@@ -4555,7 +4604,14 @@ class CasesScreen(tk.Frame):
                 button(right, "Mark acknowledged",
                        lambda i=r["id"]: self.ack(i), "ghost").pack(anchor="e")
             else:
-                tk.Label(right, text=f"Closed {fmt_date(r['resolved_at'])}",
+                # Closed on return vs. closed after SDO compliance; a NULL
+                # closed_by means the row predates the column, so no qualifier.
+                closed = f"Closed {fmt_date(r['resolved_at'])}"
+                if r["closed_by"] == "return":
+                    closed += " on return"
+                elif r["closed_by"] == "sdo":
+                    closed += " after SDO compliance"
+                tk.Label(right, text=closed,
                          bg=bg, fg=fg, font=(BODY, 8)).pack(anchor="e")
                 hint = None
                 if r["late_count"]:
@@ -4579,10 +4635,20 @@ class CasesScreen(tk.Frame):
                  pady=12, anchor="w").pack(fill="x")
 
     # METHOD: ack(self, case_id)
-    # Logic: marks one case acknowledged, announces it, refreshes the bell and dialogues what still restricts; see C4.4.
+    # Logic: manual close — refuses a case that is missing or already closed,
+    #        otherwise sets status='acknowledged', resolved_at=today and
+    #        closed_by='sdo', announces it, refreshes the bell and dialogues
+    #        what still restricts; see C4.4.
     def ack(self, case_id):
-        self.db.run("UPDATE sdo_cases SET status='acknowledged', resolved_at=? "
-                    "WHERE id=?", (iso(today()), case_id))
+        case = self.db.one("SELECT * FROM sdo_cases WHERE id=?", (case_id,))
+        if not case or case["status"] != "pending":
+            Toast(self.shell.app, "Case updated",
+                  "That case is already acknowledged.", "info")
+            self.shell.navigate("cases")
+            return
+        self.db.run("UPDATE sdo_cases SET status='acknowledged', resolved_at=?, "
+                    "closed_by='sdo' WHERE id=? AND status='pending'",
+                    (iso(today()), case_id))
         announce_case_closed(self.db, case_id, "after SDO compliance")
         self.shell.refresh_bell()
         Toast(self.shell.app, "Case updated",
