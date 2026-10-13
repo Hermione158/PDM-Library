@@ -1,5 +1,5 @@
 __pycache__/
 *.pyc
-.agent\skills
-.claude\skills
+agent\skills
+claude\skills
 skills-lock.json
