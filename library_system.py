@@ -1693,11 +1693,13 @@ class App(tk.Tk):
         # mission line — fills the gap between the stats chips and the footer
         quote = tk.Frame(hero, bg=MAROON_DARK)
         quote.pack(anchor="w", pady=(44, 0))
-        tk.Frame(quote, bg=GOLD, width=3, height=64).pack(side="left",
-                                                          padx=(0, 16))
-        tk.Label(quote, text="\u201cWhere education is a right,\nnot a privilege.\u201d",
+        tk.Frame(quote, bg=GOLD, width=3, height=146).pack(side="left",
+                                                           padx=(0, 16))
+        # 34pt to match the headline, broken across three lines so the longest
+        # line still fits the panel width (two lines overflowed it by ~67px).
+        tk.Label(quote, text="“Where education\nis a right,\nnot a privilege.”",
                  bg=MAROON_DARK, fg="#EFE3DC", justify="left",
-                 font=tkfont.Font(family=HEAD, size=20, weight="bold"),
+                 font=tkfont.Font(family=HEAD, size=34, weight="bold"),
                  anchor="w").pack(side="left")
 
         tk.Label(left, text="Authorized PDM users only  •  Activity is logged "
@@ -1767,11 +1769,10 @@ class App(tk.Tk):
                 su_note.pack_forget()
                 su_row.pack(fill="x", pady=(0, 16))
                 su_link.pack(side="left")
-                forgot_lbl.pack(side="right")
             else:
                 su_row.pack_forget()
                 su_note.pack(fill="x", pady=(0, 16))
-                forgot_lbl.pack_forget()
+            helper_lbl.configure(text=HINT_TEXT[role])
 
         for role, icon in (("student", "◈"), ("staff", "◎"),
                            ("admin", "◉")):
@@ -1803,14 +1804,18 @@ class App(tk.Tk):
 
         opts = tk.Frame(form, bg=WHITE)
         opts.pack(fill="x", pady=(0, 20))
-        # Not a link: there is no self-service reset (and no mail server), so
-        # the forgotten-password path is an administrator action — see §11.
-        # Student tab only: staff/admin accounts are issued (and re-issued) by
-        # the library, so the desk hint does not apply to them.
-        forgot_lbl = tk.Label(
-            opts, text="Forgot your password? See the administrator.",
-            bg=WHITE, fg=MUTED, font=(BODY, 9))
-        forgot_lbl.pack(side="right")
+        # Role-aware helper line. On the student tab it carries the forgotten-
+        # password hint (no self-service reset, no mail server — see §11); on the
+        # staff/admin tabs it names what that portal opens. Without it this row
+        # sat empty, leaving a white gap above the sign-in button.
+        HINT_TEXT = {
+            "student": "Forgot your password? See the administrator.",
+            "staff": "Circulation desk, catalog and the transaction log await.",
+            "admin": "Dashboard, inventory, users and SDO cases await.",
+        }
+        helper_lbl = tk.Label(opts, text=HINT_TEXT["student"], bg=WHITE,
+                              fg=MUTED, font=(BODY, 9))
+        helper_lbl.pack(side="right")
 
         self.login_error = tk.Label(form, text="", bg=WHITE, fg=RED_FG,
                                     font=(BODY, 10, "bold"), anchor="w")
