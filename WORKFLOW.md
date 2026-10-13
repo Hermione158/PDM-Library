@@ -42,13 +42,16 @@ The system is a single desktop application with three layers:
 
 **Session:** a successful login calls `open_shell(user)`, which builds the `Shell`, runs `run_overdue_scan()` again, and shows a *"Library update — N new notification(s)"* toast if unread notifications exist.
 
-**Seeded demo credentials** (created on the first launch; student passwords are their birth dates):
+**Seeded demo credentials** (created on the first launch; student passwords are their birth dates). Seeding runs **only on a fresh database** — `init_db()` returns early once any `users` row exists, so editing the `STAFF` / `ADMINS` lists does not change an existing `library.db` (see §13):
 
 | Role | ID | Password | Name |
 |---|---|---|---|
 | Student | `2024-01842` | `03152005` | Alyssa M. Reyes |
 | Student | `2023-00615` | `07222004` | Joshua P. Lim |
-| Staff | `staff` | `pdmstaff` | Christopher Teope |
+| Staff | `teope` | `pdmstaff` | Christopher Teope |
+| Staff | `soy` | `pdmstaff` | Soy Delacruz |
+| Staff | `karen` | `pdmstaff` | Karen Bautista |
+| Staff | `janine` | `pdmstaff` | Janine Cruz |
 | Administrator | `admin` | `pdmadmin` | Mae Ann D.C Basa |
 
 ---
@@ -76,7 +79,7 @@ Screen titles (`TITLES`):
 | `users` | Users | Students, library staff and borrowing status |
 | `cases` | Overdue & SDO escalation | Cases requiring disciplinary follow-up |
 
-Persistent header elements: application mark, current screen title, notification **bell** with unread badge, **Sign out** (asks *"End this session?"*, then returns to `build_login`).
+Persistent header elements: application mark, current screen title, notification **bell** with unread badge, **Sign out** (asks *"End this session?"*, then returns to `build_login`). Persistent sidebar footer: the signed-in avatar, name and username, a gold **Change password** link (all roles — see A.8), and the **↪ Sign out** marker.
 
 ```mermaid
 flowchart LR
@@ -261,7 +264,7 @@ flowchart TB
 | A0.1 | Launch `py library_system.py`. Login screen shows the maroon hero left, white form right: **Welcome back** | — |
 | A0.2 | Role tabs: `◈ Student` (default) · `◎ Staff` · `◉ Administrator` | Switching to Staff/Admin replaces the signup link with *"Staff and administrator accounts are issued by the library."* |
 | A0.3 | Field label **Student number**, hint `e.g. 2024-018423` | ID field label and hint change per role tab |
-| A0.4 | Enter password, click **→ Sign in as Student** (or press Enter) | Wrong ID/password → *"We could not match those credentials. Check your ID and password, then try again."* |
+| A0.4 | Enter password, click **→ Sign in as Student** (or press Enter) | A **Show** / **Hide** link sits at the right end of the password box on every role tab (Student / Staff / Administrator) — clicking it flips the `•` mask so the typed text is readable. Display only; the hash and the sign-in check are unaffected. Forgot password? There is no self-service reset and no mail server — on the **Student tab only** the login screen reads *"Forgot your password? See the administrator."* and the student is reset at the desk (**Users → double-click → Reset password**, see C3.2); the line is hidden on the Staff and Administrator tabs, whose accounts are issued and re-issued by the library. Wrong ID/password → *"We could not match those credentials. Check your ID and password, then try again."* |
 | A0.5 | — | Wrong role tab → *"This account is registered as … — select the matching role tab."* |
 | A0.6 | Success → shell opens on **Library catalog** | `open_shell()` runs the overdue scan; if new notices exist, toast *"Library update — N new notification(s) for your account."* |
 
@@ -275,7 +278,7 @@ Accessed from the link **New student? Create an account** under the sign-in butt
 | A1.2 | — | Must be unused → *"That student number is already registered - sign in instead."* |
 | A1.3 | **Full name** (placeholder `e.g. Juan D. Cruz`) | ≥ 3 chars, contains a space, not the placeholder → *"Enter your complete name (first and last)."* |
 | A1.4 | **Program** (dropdown, fixed: BS Information Technology, BS Tourism, BS Hospitality Management, BS Computer Science, BS Early Childhood Education, BTLED, BS Entrepreneurship) · **Year level** (1st–4th Year) · **Section** (A/B/C/D, no default) | All required → *"Select your program and year level."* / *"Select your section (A, B, C or D)."* |
-| A1.5 | **Password** | ≥ 6 characters → *"Password must be at least 6 characters."* |
+| A1.5 | **Password** | Each password box has its own **Show** / **Hide** link at the right end (the two boxes toggle independently). ≥ 6 characters → *"Password must be at least 6 characters."* |
 | A1.6 | **Confirm password** | Must match → *"Passwords do not match."* |
 | A1.7 | Click **→ Signup** (the only submit path — pressing Enter does nothing) | Row inserted into `users` with `role='student'`, the chosen `program`, `year_level` and `section`, `status='active'`, `joined=today` |
 | A1.8 | — | Dialog **Account created** — *"Your account has been created, {first name}! Click OK to open your student dashboard."*; **OK** signs the student in and opens the student dashboard |
@@ -349,6 +352,18 @@ Accessed from the link **New student? Create an account** under the sign-in butt
 | Step | Action | System response |
 |---|---|---|
 | A7.1 | **Sign out** | Confirmation *"End this session?"* → back to the login screen |
+
+### A.8 Change password (all roles)
+
+Available to student, staff and administrator from the gold **Change password** link in the sidebar footer. It is the follow-up to an admin reset — a *temporary* password is only honest if the account holder can replace it.
+
+| Step | Action | System response |
+|---|---|---|
+| A8.1 | Click **Change password** | Centered *Change password* dialog with three masked fields — **Current password**, **New password**, **Confirm new password** — each with its own **Show** / **Hide** toggle |
+| A8.2 | Enter the current password | Must match the stored hash → *"Your current password is not correct."* (guards an unlocked walk-up session); nothing is written |
+| A8.3 | Enter and confirm the new one | ≥ 6 characters → *"Password must be at least 6 characters."*; must match → *"Passwords do not match."*; must differ from the current one → *"Choose a password you have not used here before."* |
+| A8.4 | **Save password** | `UPDATE users SET password=hash_pw(new)` — hashed, only that column changes — plus a self-addressed *"Password changed"* notice in the bell and a confirmation toast |
+| A8.5 | **Cancel** | Closes without writing anything |
 
 ---
 
@@ -437,7 +452,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 | Step | Action | System response |
 |---|---|---|
 | C3.1 | Sidebar **Users ◉** | Table ID / NAME / ROLE / PROGRAM / ON LOAN / OVERDUE / STATUS (`● Active`, `● Blocked`) |
-| C3.2 | **Double-click a row** | Confirmation *"Block the account of {name}?"* (or reinstate) → `users.status` updated, table refreshed. **Reinstate warning:** when reinstating an account that still has books `sdo_after`+ days overdue, the same dialog appends *"Warning: n book(s) are still X+ day(s) overdue. The account will be blocked again at the next automatic scan. Reinstate anyway?"* — declining aborts |
+| C3.2 | **Double-click a row** | Opens a **Manage account** dialog showing name, ID, role, program and current status, with three actions: **[Block account] / [Reinstate]**, **[↻ Reset password]** and **[Close]**. Blocking flips `users.status` and refreshes the table; admins get a disabled *Block unavailable* instead. **Reinstate warning:** when reinstating an account that still has books `sdo_after`+ days overdue, the confirmation appends *"Warning: n book(s) are still X+ day(s) overdue. The account will be blocked again at the next automatic scan. Reinstate anyway?"* — declining aborts. **Reset password:** prompts for a temporary password (masked, ≥ 6 characters — same rule as signup), stores it hashed, drops a *"Password reset"* notice into the student's bell, and confirms to the admin. Cancel, a blank entry, or a short value changes nothing |
 | C3.3 | Double-click an administrator | Refused: *"Administrators cannot be blocked."* |
 | C3.4 | Effect of blocking | Sign-in still possible (see §13), but `eligibility()` returns *"Account is blocked"* so checkout and reservation are refused |
 
@@ -673,6 +688,9 @@ sequenceDiagram
 | Student number format | `\d{4}-\d{6}` (older 5-digit numbers still sign in) | `attempt_signup()` |
 | Student section | Must be one of A, B, C, D (no default — must be picked) | `attempt_signup()` |
 | Password minimum | 6 characters | `attempt_signup()` |
+| **Password reset** | Admin-only, from **Users → double-click → ↻ Reset password**. The admin types a temporary password (masked, ≥ 6 characters); it is stored hashed, a *"Password reset"* notice is written to the account holder's bell pointing them at **Change password**, and Cancel / blank / too-short values change nothing | `UsersScreen.reset_password()` |
+| **Change password** | Self-service for **every role**, from the gold link in the sidebar footer. Requires the **current** password, and the new one must be ≥ 6 characters, match its confirmation, and differ from the current one. Writes only `users.password` (hashed) and logs a *"Password changed"* notice to the holder's own bell | `Shell.change_password()` |
+| Forgotten password | No self-service reset and no mail server — the login screen directs the student to the administrator | `build_login()` |
 | Reservation uniqueness | one per student per title (`UNIQUE(book_id,user_id)`) | `reserve()`, `request_borrow()` |
 | Reminder window | 1 day before due, plus the due date itself | `run_overdue_scan()` |
 | Overdue scan interval | 60 000 ms | `App.tick()` |
@@ -738,3 +756,4 @@ Run once from a fresh launch (delete `library.db` first if you want the seeded d
 8. **The desk works from a list, not a search form.** The **Requests** tab replaced *Identify borrower / Add books*: every `requested` (Borrow today) and `ready` (pickup) reservation is a row with a **Process** button, and processing runs the same `checkout()` as before — eligibility re-checked, loan written, hold consumed. A walk-up borrower has to send *Borrow today* from the catalog first; only the Renew tab still looks a student up by number.
 9. **A restriction is lifted by people, not by the return.** The scan sets `users.status='blocked'` at 2 days overdue and re-applies it on every tick; `return_book()` closes the `sdo_cases` row (existing behaviour, unchanged) but deliberately leaves the block in place. The student complies with the SDO, the administrator records it with **SDO cases → Mark acknowledged**, then unblocks the account on **Users** — exactly the acknowledge flow already in the system. Until both clicks happen, `eligibility()` keeps refusing with *"Account is blocked"*. Either closure path writes a system-wide *"SDO case acknowledged"* notice through `announce_case_closed()`, so the admin Dashboard Notifications card and the bell badge record the outcome.
 10. **A Borrow-today request does not expire.** It holds its copy until the desk processes it or the student cancels it from **Reservations**. Only `ready` reservations carry the 3-day window.
+11. **Account seeding runs only on a fresh database.** `init_db()` returns as soon as any `users` row exists, so `BOOKS`, `STUDENTS`, `STAFF` and `ADMINS` in the code are applied **only when `library.db` is created**. Editing those lists — e.g. renaming the staff logins to `teope` / `soy` / `karen` / `janine` — changes nothing in an existing database. Only the three policy settings (`loan_days`, `renew_window`, `sdo_after`) are re-written on every launch. To move existing accounts over, update `users.username` directly (matching on username **and** name): every other table links by `users.id`, so loans, reservations, transactions, notifications and SDO cases stay attached and passwords are unaffected. Deleting `library.db` instead re-seeds from scratch but destroys all circulation and SDO history.

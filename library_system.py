@@ -12,7 +12,7 @@ import sqlite3
 import hashlib
 import datetime as dt
 import tkinter as tk
-from tkinter import ttk, messagebox, font as tkfont
+from tkinter import ttk, messagebox, font as tkfont, simpledialog
 
 APP_NAME = "PDM Library"
 SLOGAN = "Lending & Reservations"
@@ -628,10 +628,10 @@ STUDENTS = [
 ]
 
 STAFF = [
-    ("staff", "Christopher Teope", "Library Staff", "pdmstaff"),
-    ("a.soy", "Soy Delacruz", "Library Staff", "pdmstaff"),
-    ("b.karen", "Karen Bautista", "Library Staff", "pdmstaff"),
-    ("c.janine", "Janine Cruz", "Library Staff", "pdmstaff"),
+    ("teope", "Christopher Teope", "Library Staff", "pdmstaff"),
+    ("soy", "Soy Delacruz", "Library Staff", "pdmstaff"),
+    ("karen", "Karen Bautista", "Library Staff", "pdmstaff"),
+    ("janine", "Janine Cruz", "Library Staff", "pdmstaff"),
 ]
 
 ADMINS = [
@@ -1549,6 +1549,8 @@ def placeholder(e, text):
 
 
 # field(...) — labelled entry with optional hint; auth forms.
+# Password fields (show="•") also get a Show/Hide toggle so the masked text can
+# be revealed; it only flips the mask, never the stored or hashed value.
 def field(parent, label, show=None, hint=None):
     wrap = tk.Frame(parent, bg=WHITE)
     wrap.pack(fill="x", pady=(0, 14))
@@ -1563,6 +1565,21 @@ def field(parent, label, show=None, hint=None):
     e.pack(side="left", fill="x", expand=True, padx=(0 if hint else 0, 0),
            ipady=4)
     box.configure(highlightthickness=1, highlightbackground=LINE)
+    if show is not None:
+        toggle = tk.Label(box, text="Show", bg=WHITE, fg=MAROON,
+                          font=(BODY, 9, "bold"), cursor="hand2", padx=10)
+        toggle.pack(side="right")
+
+        # flip(event) — toggles the mask between hidden and plain text.
+        # Text label rather than an eye glyph: emoji fall back to a box in
+        # Tk's default Windows font. Display only — get() and the hash are
+        # untouched, so nothing about validation or storage changes.
+        def flip(event=None, e=e, toggle=toggle):
+            masked = bool(e.cget("show"))
+            e.configure(show="" if masked else "•")
+            toggle.configure(text="Hide" if masked else "Show")
+
+        toggle.bind("<Button-1>", flip)
     return e
 
 
@@ -1629,8 +1646,9 @@ class App(tk.Tk):
 
     # METHOD: build_auth_left(self, left)
     # Draws the shared maroon branding panel (logo, slogan, hero headline,
-    # "N catalogued books" counter, Data Privacy Act footer) reused by both
-    # the sign-in and sign-up screens.
+    # "N catalogued books" counter, the gold-ruled mission line
+    # "Where education is a right, not a privilege.", and the Data Privacy
+    # Act footer) reused by both the sign-in and sign-up screens.
     def build_auth_left(self, left):
         brand = tk.Frame(left, bg=MAROON_DARK)
         brand.pack(anchor="nw", padx=54, pady=(50, 0))
@@ -1671,6 +1689,16 @@ class App(tk.Tk):
                 side="left", padx=(0, 8))
             tk.Label(item, text=text, bg=MAROON_DARK, fg="#EFE3DC",
                      font=(BODY, 11)).pack(side="left")
+
+        # mission line — fills the gap between the stats chips and the footer
+        quote = tk.Frame(hero, bg=MAROON_DARK)
+        quote.pack(anchor="w", pady=(44, 0))
+        tk.Frame(quote, bg=GOLD, width=3, height=64).pack(side="left",
+                                                          padx=(0, 16))
+        tk.Label(quote, text="\u201cWhere education is a right,\nnot a privilege.\u201d",
+                 bg=MAROON_DARK, fg="#EFE3DC", justify="left",
+                 font=tkfont.Font(family=HEAD, size=20, weight="bold"),
+                 anchor="w").pack(side="left")
 
         tk.Label(left, text="Authorized PDM users only  •  Activity is logged "
                  "in accordance with campus library policy and the Data "
@@ -1739,9 +1767,11 @@ class App(tk.Tk):
                 su_note.pack_forget()
                 su_row.pack(fill="x", pady=(0, 16))
                 su_link.pack(side="left")
+                forgot_lbl.pack(side="right")
             else:
                 su_row.pack_forget()
                 su_note.pack(fill="x", pady=(0, 16))
+                forgot_lbl.pack_forget()
 
         for role, icon in (("student", "◈"), ("staff", "◎"),
                            ("admin", "◉")):
@@ -1773,11 +1803,14 @@ class App(tk.Tk):
 
         opts = tk.Frame(form, bg=WHITE)
         opts.pack(fill="x", pady=(0, 20))
-        self.remember = tk.BooleanVar(value=True)
-        check_row(opts, "Remember this device", self.remember, pady=0,
-                  side="left")
-        tk.Label(opts, text="Forgot password?", bg=WHITE, fg=MAROON,
-                 font=(BODY, 10, "bold"), cursor="hand2").pack(side="right")
+        # Not a link: there is no self-service reset (and no mail server), so
+        # the forgotten-password path is an administrator action — see §11.
+        # Student tab only: staff/admin accounts are issued (and re-issued) by
+        # the library, so the desk hint does not apply to them.
+        forgot_lbl = tk.Label(
+            opts, text="Forgot your password? See the administrator.",
+            bg=WHITE, fg=MUTED, font=(BODY, 9))
+        forgot_lbl.pack(side="right")
 
         self.login_error = tk.Label(form, text="", bg=WHITE, fg=RED_FG,
                                     font=(BODY, 10, "bold"), anchor="w")
@@ -2172,6 +2205,13 @@ class Shell(tk.Frame):
                  font=(BODY, 10, "bold"), anchor="w").pack(anchor="w")
         tk.Label(who, text=user["username"], bg=MAROON_DARK, fg="#C9AFA8",
                  font=(BODY, 9), anchor="w").pack(anchor="w")
+        # self-service password change — the follow-up to an admin reset, and
+        # available to every role; see change_password() and §11.
+        change = tk.Label(who, text="Change password", bg=MAROON_DARK,
+                          fg=GOLD, font=(BODY, 8, "bold"), cursor="hand2",
+                          anchor="w")
+        change.pack(anchor="w", pady=(3, 0))
+        change.bind("<Button-1>", lambda e: self.change_password())
         out = tk.Label(foot, text="↪", bg=MAROON_DARK, fg="#E7D6D1",
                        font=(BODY, 14), cursor="hand2")
         out.pack(side="right")
@@ -2358,6 +2398,86 @@ class Shell(tk.Frame):
     def logout(self):
         if messagebox.askyesno("Sign out", "End this session?"):
             self.app.build_login()
+
+    # METHOD: change_password(self)
+    # Self-service password change for ANY role — the follow-up to an
+    # administrator reset ("temporary" is only honest if it can be replaced).
+    # Requires the current password so a walk-up at an unlocked machine cannot
+    # take the account over; new >= 6 chars, must match the confirmation, and
+    # must differ from the current one. Writes only users.password, always
+    # hashed, and leaves a self-addressed notice in the bell as an audit trail.
+    # The three fields go through field(), so each carries a Show/Hide toggle.
+    def change_password(self):
+        uid = self.user["id"]
+        row = user_by_id(self.db, uid)
+        if not row:
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Change password")
+        win.configure(bg=CREAM)
+        win.transient(self.app)
+        win.resizable(False, False)
+        box = tk.Frame(win, bg=WHITE)
+        box.pack(fill="both", expand=True, padx=26, pady=22)
+
+        tk.Label(box, text="Change password", bg=WHITE, fg=INK,
+                 font=tkfont.Font(family=HEAD, size=17, weight="bold"),
+                 anchor="w").pack(anchor="w")
+        tk.Label(box, text=f"{row['name']}  ({row['username']})", bg=WHITE,
+                 fg=MUTED, font=(BODY, 10), anchor="w").pack(
+            anchor="w", pady=(2, 16))
+
+        cur = field(box, "Current password", show="•")
+        new = field(box, "New password", show="•")
+        again = field(box, "Confirm new password", show="•")
+        error = tk.Label(box, text="", bg=WHITE, fg=RED_FG,
+                         font=(BODY, 9, "bold"), anchor="w")
+        error.pack(fill="x")
+
+        def close():
+            win.destroy()
+
+        # submit() — validate everything BEFORE touching the database.
+        def submit():
+            current = cur.get()
+            fresh = new.get()
+            if row["password"] != hash_pw(current):
+                error.configure(text="Your current password is not correct.")
+                return
+            if len(fresh) < 6:
+                error.configure(text="Password must be at least 6 characters.")
+                return
+            if fresh != again.get():
+                error.configure(text="Passwords do not match.")
+                return
+            if fresh == current:
+                error.configure(text="Choose a password you have not used "
+                                     "here before.")
+                return
+            error.configure(text="")
+            self.db.run("UPDATE users SET password=? WHERE id=?",
+                        (hash_pw(fresh), uid))
+            notify(self.db, uid, "Password changed",
+                   "Your library password was changed from this session. Use "
+                   "the new password next time you sign in.", "info")
+            close()
+            self.refresh_bell()
+            Toast(self.app, "Password changed",
+                  f"{row['name']} - your new password is active.", "info")
+
+        actions = tk.Frame(box, bg=WHITE)
+        actions.pack(fill="x", pady=(14, 0))
+        button(actions, "Save password", submit, "primary").pack(side="left")
+        button(actions, "Cancel", close, "quiet").pack(side="right")
+        for wdg in (cur, new, again):
+            wdg.bind("<Return>", lambda e: submit())
+
+        win.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - win.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{max(x, 10)}+{max(y, 10)}")
+        cur.focus_set()
 SELECT_BOOK = """
 SELECT b.*,
  (SELECT COUNT(*) FROM copies c WHERE c.book_id=b.id) AS total,
@@ -4277,6 +4397,7 @@ class InventoryScreen(tk.Frame):
         tk.Label(search, text="⌕", bg=WHITE, fg=MUTED, font=(BODY, 11)).pack(
             side="left", padx=(10, 4))
         e = entry(search)
+        e.configure(textvariable=self.query)   # typing must reach load()
         e.pack(side="left", fill="x", expand=True, ipady=3)
         e.bind("<KeyRelease>", lambda ev: self.after(1, self.load))
         cats = ["All categories"] + sorted({
@@ -4429,7 +4550,8 @@ class InventoryScreen(tk.Frame):
 # Purpose: All accounts (students / staff / admins) with ON LOAN, OVERDUE and
 #          Active / Blocked status. Double-clicking a row BLOCKS or REINSTATES
 #          the account — the only way to lift an escalation block.
-# Logic:   toggle_status() flips users.status; refuses on administrators;
+# Logic:   manage_account() opens the double-click dialog; toggle_status()
+    #          flips users.status; reset_password() issues a temporary password;
     #          eligibility() re-reads this status, so a block stops borrowing.
 # Objects: built by Shell.navigate("users").
 # =====================================================================
@@ -4454,10 +4576,11 @@ class UsersScreen(tk.Frame):
         sb = attach_scroll(self.tv, holder)
         self.tv.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        self.tv.bind("<Double-1>", self.toggle_status)
-        hint = tk.Label(panel.inner, text="Double-click a row to block or "
-                         "reinstate a student account.", bg=WHITE, fg=MUTED,
-                         font=(BODY, 9))
+        self.tv.bind("<Double-1>", self.manage_account)
+        hint = tk.Label(panel.inner, text="Double-click a row to manage the "
+                         "account — block or reinstate a student, or issue a "
+                         "new password when someone forgets theirs.",
+                         bg=WHITE, fg=MUTED, font=(BODY, 9))
         hint.pack(anchor="w", pady=(10, 0))
         self.load()
 
@@ -4477,12 +4600,75 @@ class UsersScreen(tk.Frame):
                 u["program"] or "-", u["section"] or "-", loans, overdue,
                 "●  " + ("Active" if u["status"] == "active" else "Blocked")))
 
-    # METHOD: toggle_status(self, event)
-    # Logic: flips the double-clicked account active ↔ blocked (admins exempt);
-    #        reinstating warns when books are still sdo_after+ days overdue,
-    #        because run_overdue_scan() would re-block on its next 60 s pass;
+    # METHOD: manage_account(self, event)
+    # Logic: double-click opener — a "Manage account" dialog for one user with
+    #        three actions: Block/Reinstate (toggle_status), Reset password
+    #        (reset_password) and Cancel. Every path is admin-only; see C3.2–C3.4.
+    def manage_account(self, event):
+        sel = self.tv.selection()
+        if not sel:
+            return
+        uid = int(sel[0])
+        user = user_by_id(self.db, uid)
+        if not user:
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Manage account")
+        win.configure(bg=CREAM)
+        win.transient(self.winfo_toplevel())
+        win.resizable(False, False)
+        inner = tk.Frame(win, bg=WHITE)
+        inner.pack(fill="both", expand=True, padx=24, pady=20)
+
+        tk.Label(inner, text=user["name"], bg=WHITE, fg=INK,
+                 font=tkfont.Font(family=HEAD, size=17, weight="bold"),
+                 anchor="w").pack(anchor="w")
+        tk.Label(inner, text=f"{user['username']}  •  {ROLE_LABEL[user['role']]}"
+                 f"  •  {'Active' if user['status'] == 'active' else 'Blocked'}",
+                 bg=WHITE, fg=MUTED, font=(BODY, 10), anchor="w").pack(
+            anchor="w", pady=(2, 0))
+        if user["program"]:
+            tk.Label(inner, text=user["program"], bg=WHITE, fg=MUTED,
+                     font=(BODY, 9), anchor="w").pack(anchor="w")
+        tk.Frame(inner, bg=LINE, height=1).pack(fill="x", pady=14)
+
+        row = tk.Frame(inner, bg=WHITE)
+        row.pack(fill="x")
+
+        def close():
+            win.destroy()
+
+        def do_toggle():
+            close()
+            self.toggle_status()
+
+        def do_reset():
+            close()
+            self.reset_password()
+
+        blocked = user["status"] == "blocked"
+        if user["role"] == "admin":
+            button(row, "Block unavailable", lambda: None, "quiet").pack(
+                side="left")
+        else:
+            button(row, "Reinstate" if blocked else "Block account",
+                   do_toggle, "ghost").pack(side="left")
+        button(row, "Reset password", do_reset, "primary",
+               icon="↻").pack(side="left", padx=(10, 0))
+        button(row, "Close", close, "quiet").pack(side="right")
+
+        win.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - win.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{max(x, 10)}+{max(y, 10)}")
+
+    # METHOD: toggle_status(self)
+    # Logic: flips an account active ↔ blocked (admins exempt); reinstating warns
+    #        when books are still sdo_after+ days overdue, because
+    #        run_overdue_scan() would re-block on its next 60 s pass;
     #        see C3.2–C3.4 and §11 "Reinstate warning".
-    def toggle_status(self, event):
+    def toggle_status(self):
         sel = self.tv.selection()
         if not sel:
             return
@@ -4510,6 +4696,45 @@ class UsersScreen(tk.Frame):
                                    f"{user['name']}?{warn}", parent=self):
             return
         self.db.run("UPDATE users SET status=? WHERE id=?", (new, uid))
+        self.load()
+
+    # METHOD: reset_password(self)
+    # Logic: desk password reset for the selected account. The admin types a
+    #        temporary password (>= 6 characters, same rule as signup), which is
+    #        stored hashed and notified in-app. Deliberately NOT a reset to the
+    #        birth date: self-registered students have birthdate='' (:2053), so
+    #        that would set an empty password. See §11 "Password reset".
+    def reset_password(self):
+        sel = self.tv.selection()
+        if not sel:
+            return
+        uid = int(sel[0])
+        user = user_by_id(self.db, uid)
+        if not user:
+            return
+        temp = simpledialog.askstring(
+            "Reset password",
+            f"Temporary password for {user['name']} "
+            f"({user['username']}):\n\n"
+            "At least 6 characters. Share it with the student in person.",
+            show="•", parent=self)
+        if temp is None:          # Cancel pressed — change nothing
+            return
+        temp = temp.strip()
+        if len(temp) < 6:
+            messagebox.showwarning(
+                "Reset password",
+                "Password must be at least 6 characters. Nothing was changed.",
+                parent=self)
+            return
+        self.db.run("UPDATE users SET password=? WHERE id=?",
+                    (hash_pw(temp), uid))
+        notify(self.db, uid, "Password reset",
+               "An administrator reset your library password. Sign in with "
+               "the temporary password, then use Change password at the "
+               "bottom of the sidebar to set your own.", "warn")
+        Toast(self.shell.app, "Password reset",
+              f"{user['name']} - new password issued.", "info")
         self.load()
 
 
