@@ -16,7 +16,15 @@ from tkinter import ttk, messagebox, font as tkfont, simpledialog
 
 APP_NAME = "PDM Library"
 SLOGAN = "Lending & Reservations"
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Where library.db and library_report.txt live.
+# When frozen by PyInstaller, __file__ points inside the _internal bundle
+# folder — so library.db would end up buried there and be invisible to the
+# person using the app. Use the exe's own folder instead so the data sits
+# beside PDM-Library.exe, where it is obvious and easy to back up.
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "library.db")
 
 MAROON_DARK = "#5A1220"
@@ -612,20 +620,13 @@ BOOKS = [
      "managerial decision making."),
 ]
 
-STUDENTS = [
-    ("2024-01842", "Alyssa M. Reyes", "BS Information Systems", "2nd Year",
-     "B", "03152005"),
-    ("2023-00615", "Joshua P. Lim", "BS Computer Science", "3rd Year",
-     "C", "07222004"),
-    ("2024-02481", "Denise R. Flores", "Bachelor of Elementary Education",
-     "2nd Year", "A", "11092005"),
-    ("2022-00988", "Carlo D. Ramos", "BS Business Administration", "4th Year",
-     "D", "01042003"),
-    ("2025-01177", "Maria C. Delos Santos", "BS Psychology", "1st Year",
-     "A", "06182006"),
-    ("2023-03390", "Kevin B. Aguilar", "BS Secondary Education", "3rd Year",
-     "B", "09252004"),
-]
+# STUDENTS is intentionally EMPTY.
+# Students are no longer seeded: each one registers for itself from the
+# Student tab of the sign-in screen (attempt_signup), so a fresh database
+# starts with the catalog, the staff/admin accounts and nothing else.
+# Demo student accounts and their demo circulation were retired — do not
+# reintroduce them here, or every new database will ship with them again.
+STUDENTS = []
 
 STAFF = [
     ("teope", "Christopher Teope", "Library Staff", "pdmstaff"),
@@ -816,7 +817,8 @@ def seed_db(db):
                        ("sdo_after", SDO_AFTER), ("renew_window", RENEW_WINDOW)):
         db.run("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",
                 (key, str(value)))
-    seed_activity(db)
+    # No demo loans / holds / SDO cases / notices are planted any more — a fresh
+    # database starts empty and fills up through real use only.
 
 
 # --- READ HELPERS (lookups, counts, queues) ---
@@ -1443,97 +1445,13 @@ def acc(book_id, i=0):
     return f"PDM-{1000 + book_id * 40 + i:06d}"
 
 
-# --- DEMO LOANS, HOLDS + NOTICES (seed only) ---
-# seed_activity(db) — demo loans, holds, cases + notices; seed only.
-def seed_activity(db):
-    # borrow(...) — plants one demo loan: checkout back_days ago, due late_days out.
-    def borrow(username, book_id, copy_index, back_days, late_days,
-               status="active", renewals=0):
-        u = db.one("SELECT id FROM users WHERE username=?", (username,))
-        c = db.one("SELECT id FROM copies WHERE accession=?",
-                   (acc(book_id, copy_index),))
-        if not u or not c:
-            return None
-        checkout = today() - dt.timedelta(days=back_days)
-        due = today() + dt.timedelta(days=late_days)
-        loan_id = db.run(
-            "INSERT INTO loans(copy_id,user_id,checkout_date,due_date,"
-            "renewals,status) VALUES(?,?,?,?,?,?)",
-            (c["id"], u["id"], iso(checkout), iso(due), renewals, status))
-        db.run("UPDATE copies SET status='checked_out' WHERE id=?", (c["id"],))
-        db.run("INSERT INTO transactions(ts,user_id,copy_id,type,staff_id,"
-               "status,note) VALUES(?,?,?,?,?,?,?)",
-               (dt.datetime.combine(checkout, dt.time(9, 30)).isoformat(
-                   timespec="seconds"), u["id"], c["id"], "Checkout", 7,
-                "Completed", f"Due {iso(due)}"))
-        return loan_id
+# --- DEMO ACTIVITY REMOVED ---
+# seed_activity() used to plant demo loans, holds, SDO cases, transactions
+# and system notices tied to the retired demo student accounts. It is gone:
+# students now register themselves (attempt_signup) and every record in a
+# database is created by real use. See WORKFLOW.md section 13.
 
-    # reserve_slot(...) — plants one demo reservation in the given state.
-    def reserve_slot(username, book_id, position, status, ahead_days=0):
-        u = db.one("SELECT id FROM users WHERE username=?", (username,))
-        created = today() - dt.timedelta(days=max(ahead_days, 1))
-        ready = iso(today() + dt.timedelta(days=HOLD_DAYS)) if status == "ready" else None
-        db.run("INSERT INTO reservations(book_id,user_id,position,status,"
-               "created_at,ready_at) VALUES(?,?,?,?,?,?)",
-               (book_id, u["id"], position, status, iso(created), ready))
 
-    borrow("2024-01842", 5, 0, 10, 4)
-    borrow("2024-01842", 7, 0, 13, 1)
-    borrow("2024-01842", 6, 0, 5, 9)
-    overdue_loan = borrow("2022-00988", 1, 0, 32, -18, status="overdue")
-    borrow("2022-00988", 12, 0, 8, 6)
-    borrow("2023-00615", 8, 0, 16, -2, status="overdue")
-    borrow("2023-00615", 9, 0, 7, 7)
-    borrow("2023-00615", 1, 2, 4, 10)
-    borrow("2024-02481", 3, 0, 3, 11)
-    borrow("2024-02481", 1, 3, 11, 3)
-    borrow("2025-01177", 4, 0, 9, 5)
-    borrow("2025-01177", 1, 1, 8, 6)
-    borrow("2023-03390", 13, 0, 6, 8)
-    borrow("2023-03390", 1, 4, 2, 12)
-
-    reserve_slot("2023-03390", 1, 1, "waiting", 6)
-    reserve_slot("2025-01177", 1, 2, "waiting", 4)
-    reserve_slot("2024-01842", 1, 3, "waiting", 3)
-    reserve_slot("2024-01842", 10, None, "ready", 1)
-    db.run("UPDATE copies SET status='reserved' WHERE accession=?",
-           (acc(10, 0),))
-
-    if overdue_loan:
-        carlo = db.one("SELECT id FROM users WHERE username='2022-00988'")
-        db.run("INSERT INTO sdo_cases(loan_id,user_id,reason,status,created_at) "
-               "VALUES(?,?,?,?,?)",
-               (overdue_loan, carlo["id"],
-                "Python Programming: An Introduction to Computer Science "
-                "overdue by 18 days", "pending",
-                iso(today() - dt.timedelta(days=4))))
-
-    for user_id, title, body, kind, back in (
-            (None, "Nightly backup completed",
-             "library.db snapshot stored at 2:05 AM.", "system", 0),
-            (None, "3 returned books need shelving",
-             "Circulation desk has items ready for the stacks.", "system", 0),
-            (None, "Inventory sync finished",
-             "Shelf locations verified against the catalog.", "system", 1)):
-        ts = dt.datetime.combine(today() - dt.timedelta(days=back),
-                                 dt.time(8, 0)).isoformat(timespec="seconds")
-        db.run("INSERT INTO notifications(user_id,title,body,level,kind,dedupe,"
-               "ts,read) VALUES(?,?,?,?,?,?,?,0)",
-               (user_id, title, body, "info", kind, f"sys:{kind}:{title}:{back}",
-                ts))
-    db.run("INSERT INTO transactions(ts,user_id,copy_id,type,staff_id,status,"
-           "note) VALUES(?,?,?,?,?,?,?)",
-           (dt.datetime.combine(today(), dt.time(10, 18)).isoformat(
-               timespec="seconds"), 4, db.scalar(
-                   "SELECT id FROM copies WHERE accession=?", (acc(8, 1),)),
-            "Return", 8, "Overdue noted", "Returned 1 day late"))
-    db.run("INSERT INTO transactions(ts,user_id,copy_id,type,staff_id,status,"
-           "note) VALUES(?,?,?,?,?,?,?)",
-           (dt.datetime.combine(today(), dt.time(10, 37)).isoformat(
-               timespec="seconds"), 5, db.scalar(
-                   "SELECT id FROM copies WHERE accession=?", (acc(4, 0),)),
-            "Renewal", 7, "Completed", f"Extended by {LOAN_DAYS} days"))
-    db.conn.commit()
 ROLE_LABEL = {"student": "Student", "staff": "Staff",
               "admin": "Administrator"}
 
@@ -1870,10 +1788,11 @@ class App(tk.Tk):
         tk.Label(hint, text="ℹ", bg=GOLD_SOFT, fg=AMBER_FG,
                  font=(BODY, 11, "bold")).pack(side="left", padx=(12, 6),
                                                pady=10)
-        tk.Label(hint, text="First-time students: your password is your birth "
-                 "date in MMDDYYYY format.\nStaff: pdmstaff  •  Administrator: "
-                 "pdmadmin", bg=GOLD_SOFT, fg="#8A6A15", font=(BODY, 10),
-                 justify="left", wraplength=360).pack(
+        tk.Label(hint, text="New students: create your own account on the Student "
+                  "tab and choose your own password.\nForgot your password? "
+                  "See the administrator.\nStaff: pdmstaff  •  Administrator: "
+                  "pdmadmin", bg=GOLD_SOFT, fg="#8A6A15", font=(BODY, 10),
+                  justify="left", wraplength=360).pack(
             side="left", padx=(0, 12), pady=10)
 
         links = tk.Frame(form, bg=WHITE)

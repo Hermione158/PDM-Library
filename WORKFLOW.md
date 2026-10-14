@@ -42,17 +42,33 @@ The system is a single desktop application with three layers:
 
 **Session:** a successful login calls `open_shell(user)`, which builds the `Shell`, runs `run_overdue_scan()` again, and shows a *"Library update — N new notification(s)"* toast if unread notifications exist.
 
-**Seeded demo credentials** (created on the first launch; student passwords are their birth dates). Seeding runs **only on a fresh database** — `init_db()` returns early once any `users` row exists, so editing the `STAFF` / `ADMINS` lists does not change an existing `library.db` (see §13):
+**Seeded credentials** (created on the first launch; **no students are seeded** — they self-register, see §13 note 12). Seeding runs **only on a fresh database** — `init_db()` returns early once any `users` row exists, so editing the `STAFF` / `ADMINS` lists does not change an existing `library.db` (see §13):
 
 | Role | ID | Password | Name |
 |---|---|---|---|
-| Student | `2024-01842` | `03152005` | Alyssa M. Reyes |
-| Student | `2023-00615` | `07222004` | Joshua P. Lim |
 | Staff | `teope` | `pdmstaff` | Christopher Teope |
 | Staff | `soy` | `pdmstaff` | Soy Delacruz |
 | Staff | `karen` | `pdmstaff` | Karen Bautista |
 | Staff | `janine` | `pdmstaff` | Janine Cruz |
 | Administrator | `admin` | `pdmadmin` | Mae Ann D.C Basa |
+
+**There are no seeded student accounts.** Students self-register from the Student tab (see A.0b); a fresh database therefore starts with the catalog and these five accounts only, and `STUDENTS` in `library_system.py` is intentionally empty.
+
+**Project layout**
+
+| Path | Purpose | In git? |
+|---|---|---|
+| `library_system.py` | the entire application — this is the only file you edit to change behaviour | yes |
+| `WORKFLOW.md` | this document | yes |
+| `PDM-Library.spec` | PyInstaller build recipe for the portable `.exe` | yes |
+| `scripts\` | maintenance tools — `make_seed.py`, `verify_queries.py`, `remove_demo_accounts.py` (all resolve paths relative to the project root, so they can be run from anywhere) | no (local only, git-ignored) |
+| `queries\` | `library_queries.sql` — 25 verified read-only SQLite queries for reporting and checks | no (local only, git-ignored) |
+| `library.db` | **the live database** — all real data. Back this up by copying it | no (git-ignored) |
+| `library_report.txt` | written by Dashboard → Export report | no (git-ignored) |
+| `backups\` | local safety copies of `library.db` | no (git-ignored) |
+| `releases\` | published portable packages (`PDM-Library-v1.zip`) | no (git-ignored) |
+
+Nothing in the app reads from `scripts\`, `queries\`, `backups\` or `releases\` — they are tools and outputs, not part of the running system.
 
 ---
 
@@ -736,14 +752,14 @@ Run once from a fresh launch (delete `library.db` first if you want the seeded d
 | 5 | Staff | Sign out → **◎ Staff** tab → `staff` / `pdmstaff` | Circulation workspace opens on **↗ Requests** |
 | 6 | Staff | **Process** the top row of **Borrow today (n)** → confirm **Process request** → **Yes** | Toast *"Request processed — {name} — Due {today+3}"*; the row disappears and the accession appears in *Recent transactions*. (Choose **No** first to see the confirmation with title, student and shelf, and nothing is written) |
 | 7 | Staff | Tab **↙ Return**, scan the accession issued in step 6 → **Process return** → confirm **Process return** → **Yes** | Toast *"Return processed"*; if someone was queued, they are promoted to *Ready for pickup*. (Choose **No** to cancel — the accession stays in the field and the loan is untouched) |
-| 8 | Student | Sign in as `2024-01842` / `03152005` → bell | Unread badge shows the pickup / reminder notices; **Mark all read** clears it |
+| 8 | Student | Sign in as the account registered in step 2 → bell | Unread badge shows the pickup / reminder notices; **Mark all read** clears it |
 | 9 | Student | **My loans** → **↻ Renew eligible books** | Toast *"Renewals processed — 1 loan(s) extended."*; the other two rows are skipped with *"Too early to renew - due in n days"* because only the loan due tomorrow is inside the 1-day window |
 | 10 | Admin | Sign out → **◉ Administrator** → `admin` / `pdmadmin` | Dashboard with five KPI cards, weekly chart, escalation buckets, notifications |
 | 11 | Admin | **Inventory → + Add book** → fill Title, set 2 copies → **Save to catalog** | Toast *"Catalog updated — … added with 2 copy(s)."*; table shows `2 / 2` available |
 | 12 | Admin | **Users** → double-click a student → confirm | Status flips to `● Blocked`; double-clicking an admin is refused |
 | 13 | Admin | **⇩ Export report** | Confirmation pointing to `library_report.txt` with stats, inventory and the **SDO escalation register** (one line per case, including how each closed) |
 | 14 | Admin | **SDO cases** → click **Mark acknowledged** on a pending row | Pill changes to *Acknowledged*, row shows *"Closed {date}"* |
-| 15 | Student | Set one of `2024-01842`'s `loans.due_date` to **yesterday** in `library.db`, then sign in | 60 s scan: pill reads *Overdue 1 days*; notices *"Item overdue"* and *"Final warning"* — *return it today - tomorrow your account is restricted and this record is forwarded to the Student Disciplinary Office* |
+| 15 | Student | Set one of that student's `loans.due_date` to **yesterday** in `library.db`, then sign in | 60 s scan: pill reads *Overdue 1 days*; notices *"Item overdue"* and *"Final warning"* — *return it today - tomorrow your account is restricted and this record is forwarded to the Student Disciplinary Office* |
 | 16 | Student | Move that same `due_date` two days back and sign in again | *"SDO escalation"* (staff) + *"Referred to the SDO"* + *"Account restricted"* (student); `users.status` becomes `blocked`, so *Borrow today* / *Reserve* refuse with *"Account is blocked"*. Returning the book at this point closes the loan but **leaves the case pending** — see §10 row 10 |
 | 17 | Admin | **SDO cases → Mark acknowledged** → enter the student's **SDO receipt number**; then **Users** → double-click that student → confirm (a *"SDO case(s) still pending"* warning should no longer appear) | The case closes with the receipt recorded, the pill flips to `● Active`, and the student can borrow again — neither the case closure nor the return lifts the block on its own |
 
@@ -761,4 +777,5 @@ Run once from a fresh launch (delete `library.db` first if you want the seeded d
 8. **The desk works from a list, not a search form.** The **Requests** tab replaced *Identify borrower / Add books*: every `requested` (Borrow today) and `ready` (pickup) reservation is a row with a **Process** button, and processing runs the same `checkout()` as before — eligibility re-checked, loan written, hold consumed. A walk-up borrower has to send *Borrow today* from the catalog first; only the Renew tab still looks a student up by number.
 9. **A returned book never acknowledges a case.** A return closes the *loan*; it does not record SDO compliance. The case only closes when an administrator records the **SDO receipt number** at **Mark acknowledged**, so a student cannot substitute returning a book for complying with the Student Disciplinary Office. The account block is likewise lifted only by the administrator on **Users**; the 60-second scan re-applies `users.status='blocked'` on every tick while any loan is 2+ days overdue. The mandated order is **comply at the SDO (face-to-face, paper receipt) → admin acknowledges and records the receipt → admin tells the student to return the book → student returns → admin reinstates on Users**. Returning early is allowed and harmless to the loan, but it leaves the case pending and the account blocked, and the desk is warned at the point of return.
 10. **A Borrow-today request does not expire.** It holds its copy until the desk processes it or the student cancels it from **Reservations**. Only `ready` reservations carry the 3-day window.
-11. **Account seeding runs only on a fresh database.** `init_db()` returns as soon as any `users` row exists, so `BOOKS`, `STUDENTS`, `STAFF` and `ADMINS` in the code are applied **only when `library.db` is created**. Editing those lists — e.g. renaming the staff logins to `teope` / `soy` / `karen` / `janine` — changes nothing in an existing database. Only the three policy settings (`loan_days`, `renew_window`, `sdo_after`) are re-written on every launch. To move existing accounts over, update `users.username` directly (matching on username **and** name): every other table links by `users.id`, so loans, reservations, transactions, notifications and SDO cases stay attached and passwords are unaffected. Deleting `library.db` instead re-seeds from scratch but destroys all circulation and SDO history.
+11. **Account seeding runs only on a fresh database.** `init_db()` returns as soon as any `users` row exists, so `BOOKS`, `STAFF` and `ADMINS` in the code are applied **only when `library.db` is created**. Editing those lists changes nothing in an existing database; only the three policy settings (`loan_days`, `renew_window`, `sdo_after`) are re-written on every launch. To move existing accounts over, update `users.username` directly (matching on username **and** name): every other table links by `users.id`, so loans, reservations, transactions, notifications and SDO cases stay attached and passwords are unaffected. Deleting `library.db` instead re-seeds from scratch but destroys all circulation and SDO history.
+12. **No demo students, and no demo circulation.** `STUDENTS` is intentionally empty and `seed_activity()` has been removed, so a fresh database contains the catalog (25 titles / 89 copies unless the code's `BOOKS` list differs), the four staff accounts, the administrator, and the policy settings — nothing else. Previously six demo student accounts were seeded along with demo loans, holds, SDO cases, transactions and notices; those were retired on request and removed from existing databases by `scripts\remove_demo_accounts.py` (which also restores any copy left flagged `checked_out`/`reserved` with nothing behind it). **Consequence to remember:** the catalog in `BOOKS` is the source of truth for a new database — any title added later through *Inventory → Add book* lives only in `library.db` and will be lost if that file is deleted.
