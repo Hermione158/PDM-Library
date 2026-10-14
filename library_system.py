@@ -645,6 +645,12 @@ MAX_RENEWALS = 3
 HOLD_DAYS = 3
 SDO_AFTER = 2
 RENEW_WINDOW = 1
+# RECEIPT_RE — the SDO paper-receipt number template: exactly SDO-YYYY-NNNN.
+# The year band keeps obviously wrong values (e.g. SDO-1899-0001) out while
+# allowing any plausible year. Input is upper-cased before this runs, so
+# "sdo-2026-0001" is accepted and stored as "SDO-2026-0001", which also keeps
+# the duplicate check comparing canonical values.
+RECEIPT_RE = re.compile(r"SDO-(19|20)\d{2}-\d{4}")
 # --- DATABASE SCHEMA ---
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -4900,13 +4906,80 @@ class CasesScreen(tk.Frame):
                  bg=GOLD_SOFT, fg="#8A6A15", font=(BODY, 10), padx=14,
                  pady=12, anchor="w").pack(fill="x")
 
+    # METHOD: ask_receipt(self, case)
+    # Logic: modal receipt dialog. simpledialog.askstring has no placeholder
+    #        support, so this builds a small Toplevel reusing entry(),
+    #        placeholder() and button(). Returns the typed text, or None when
+    #        the admin cancels. IMPORTANT guard: saving without touching the
+    #        field returns the grey hint itself, so an untouched placeholder is
+    #        treated as blank (handled by the required check in ack()).
+    def ask_receipt(self, case):
+        hint_text = "e.g. SDO-2026-0001"
+        win = tk.Toplevel(self)
+        win.title("SDO receipt")
+        win.configure(bg=CREAM)
+        win.transient(self.winfo_toplevel())
+        win.resizable(False, False)
+        box = tk.Frame(win, bg=WHITE)
+        box.pack(fill="both", expand=True, padx=24, pady=20)
+
+        tk.Label(box, text="SDO receipt number", bg=WHITE, fg=INK,
+                 font=tkfont.Font(family=HEAD, size=16, weight="bold"),
+                 anchor="w").pack(anchor="w")
+        tk.Label(box, text="Shown by the student after complying at the "
+                 "Student Disciplinary Office.",
+                 bg=WHITE, fg=MUTED, font=(BODY, 10), anchor="w",
+                 wraplength=340, justify="left").pack(anchor="w", pady=(2, 14))
+
+        frame = tk.Frame(box, bg=WHITE)
+        frame.pack(fill="x")
+        e = entry(frame)
+        e.pack(side="left", fill="x", expand=True, ipady=4)
+        placeholder(e, hint_text)
+        frame.configure(highlightthickness=1, highlightbackground=LINE)
+
+        tk.Label(box, text="Format: SDO-YYYY-NNNN, for example SDO-2026-0001",
+                 bg=WHITE, fg=MUTED, font=(BODY, 9), anchor="w").pack(
+            anchor="w", pady=(8, 0))
+
+        result = {"value": None}
+
+        def save():
+            raw = e.get().strip()
+            result["value"] = "" if raw == hint_text else raw
+            win.destroy()
+
+        def cancel():
+            win.destroy()               # result stays None
+
+        actions = tk.Frame(box, bg=WHITE)
+        actions.pack(fill="x", pady=(16, 0))
+        button(actions, "Acknowledge", save, "primary").pack(side="left")
+        button(actions, "Cancel", cancel, "quiet").pack(side="right")
+        e.bind("<Return>", lambda ev: save())
+
+        win.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - win.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{max(x, 10)}+{max(y, 10)}")
+        # NB: deliberately NOT e.focus_set() — placeholder() clears its hint on
+        # <FocusIn>, so focusing the entry would wipe the example before the
+        # admin ever sees it. Focus the dialog itself instead; clicking the
+        # field then clears the hint, which is the intended behaviour.
+        win.focus_set()
+        win.grab_set()                  # modal
+        win.wait_window()
+        return result["value"]
+
     # METHOD: ack(self, case_id)
-    # Logic: manual close — the student must first have complied at the SDO
-    #        and shown the paper receipt, so the receipt number is REQUIRED
-    #        (blank or Cancel aborts, writing nothing). Then sets
-    #        status='acknowledged', resolved_at=today, closed_by='sdo' and
-    #        stores the receipt; announces it, refreshes the bell and dialogues
-    #        what still restricts; see C4.4 and §11 "SDO compliance order".
+    # Logic: manual close — the student must first have complied at the SDO and
+    #        shown the paper receipt, so the receipt number is REQUIRED and is
+    #        validated (RECEIPT_RE shape) and rejected if another student
+    #        already used it (case-insensitive); every failure aborts writing
+    #        nothing. Then sets status='acknowledged', resolved_at=today,
+    #        closed_by='sdo' and stores the receipt; announces it, refreshes
+    #        the bell and dialogues what still restricts; see C4.4 and §11
+    #        "SDO compliance order".
     def ack(self, case_id):
         case = self.db.one("SELECT * FROM sdo_cases WHERE id=?", (case_id,))
         if not case or case["status"] != "pending":
@@ -4914,21 +4987,40 @@ class CasesScreen(tk.Frame):
                   "That case is already acknowledged.", "info")
             self.shell.navigate("cases")
             return
-        receipt = simpledialog.askstring(
-            "SDO receipt",
-            "Receipt number shown by the student.\n\n"
-            "The student must have complied with the Student Disciplinary "
-            "Office first — a returned book is not compliance.\n"
-            "Leave blank to cancel without acknowledging.",
-            parent=self)
+        receipt = self.ask_receipt(case)
         if receipt is None:
             return                       # Cancelled — nothing written
-        receipt = receipt.strip()
+        receipt = receipt.strip().upper()
         if not receipt:
             messagebox.showwarning(
                 "SDO receipt",
                 "A receipt number is required to acknowledge. Nothing was "
                 "changed.", parent=self)
+            return
+        if not RECEIPT_RE.fullmatch(receipt):
+            messagebox.showwarning(
+                "SDO receipt",
+                "That is not a valid receipt number.\n\n"
+                "Receipts look like SDO-2026-0001\n"
+                "(SDO, four-digit year, four digits).\n"
+                "Nothing was changed.", parent=self)
+            return
+        # A receipt belongs to ONE student. Reuse across different students is
+        # refused (case-insensitive: receipts are retyped by hand at the desk).
+        # Same student may reuse it across their own cases — one SDO visit can
+        # cover several overdue books, and blocking that would strand a case.
+        dup = self.db.one(
+            "SELECT s.id, u.name, u.username FROM sdo_cases s "
+            "JOIN users u ON u.id=s.user_id "
+            "WHERE s.receipt_ref=? COLLATE NOCASE AND s.user_id<>?",
+            (receipt, case["user_id"]))
+        if dup:
+            messagebox.showwarning(
+                "SDO receipt",
+                f"Receipt {receipt} was already used by {dup['name']} "
+                f"({dup['username']}) on Case SDO-{dup['id']:03d}.\n\n"
+                f"Each student must show their own receipt. "
+                f"Nothing was changed.", parent=self)
             return
         self.db.run(
             "UPDATE sdo_cases SET status='acknowledged', resolved_at=?, "
