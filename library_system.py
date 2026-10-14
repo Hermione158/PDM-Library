@@ -730,7 +730,8 @@ CREATE TABLE IF NOT EXISTS sdo_cases (
     status TEXT DEFAULT 'pending',
     created_at TEXT,
     resolved_at TEXT,
-    closed_by TEXT
+    closed_by TEXT,
+    receipt_ref TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -756,6 +757,12 @@ def init_db(db):
     if not any(row["name"] == "closed_by"
                for row in db.conn.execute("PRAGMA table_info(sdo_cases)")):
         db.run("ALTER TABLE sdo_cases ADD COLUMN closed_by TEXT")
+    # receipt_ref — the paper SDO receipt number the student showed the admin
+    # at acknowledgement. Recorded going forward; left NULL on rows closed
+    # before the column existed rather than backfilled with a guess.
+    if not any(row["name"] == "receipt_ref"
+               for row in db.conn.execute("PRAGMA table_info(sdo_cases)")):
+        db.run("ALTER TABLE sdo_cases ADD COLUMN receipt_ref TEXT")
     for key, value in (("renew_window", RENEW_WINDOW), ("loan_days", LOAN_DAYS),
                        ("sdo_after", SDO_AFTER)):
         db.run("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
@@ -921,22 +928,25 @@ def notify(db, user_id, title, body, level="info", dedupe=None, kind=None):
 # announce_case_closed(db, case_id, how) — system-wide "SDO case acknowledged" notice; deduped per case; see §10 rows 10/10b.
 def announce_case_closed(db, case_id, how):
     row = db.one(
-        "SELECT s.id, u.name, u.username, b.title FROM sdo_cases s "
+        "SELECT s.id, s.receipt_ref, u.name, u.username, b.title "
+        "FROM sdo_cases s "
         "JOIN users u ON u.id=s.user_id JOIN loans l ON l.id=s.loan_id "
         "JOIN copies c ON c.id=l.copy_id JOIN books b ON b.id=c.book_id "
         "WHERE s.id=?", (case_id,))
     if not row:
         return False
+    tail = f" (receipt {row['receipt_ref']})" if row["receipt_ref"] else ""
     return notify(db, None, "SDO case acknowledged",
                   f"Case SDO-{row['id']:03d} for {row['name']} "
-                  f"({row['username']}) - {row['title']} was closed {how}.",
+                  f"({row['username']}) - {row['title']} was closed {how}"
+                  f"{tail}.",
                   "info", f"sdoack:{row['id']}")
 
 
 # ack_guidance(db, case_id) — post-ack summary of what still restricts the student; empty if no such case; see C4.4.
 def ack_guidance(db, case_id):
-    row = db.one("SELECT s.id, s.user_id, u.name, u.username, u.status "
-                 "FROM sdo_cases s JOIN users u ON u.id=s.user_id "
+    row = db.one("SELECT s.id, s.user_id, s.receipt_ref, u.name, u.username, "
+                 "u.status FROM sdo_cases s JOIN users u ON u.id=s.user_id "
                  "WHERE s.id=?", (case_id,))
     if not row:
         return ""
@@ -944,15 +954,18 @@ def ack_guidance(db, case_id):
                      "status='overdue'", (row["user_id"],))
     others = db.scalar("SELECT COUNT(*) FROM sdo_cases WHERE user_id=? AND "
                        "status='pending' AND id<>?", (row["user_id"], case_id))
+    receipt = f" Receipt {row['receipt_ref']} recorded." if row["receipt_ref"] else ""
     head = (f"SDO-{row['id']:03d} acknowledged for {row['name']} "
-            f"({row['username']}). ")
+            f"({row['username']}).{receipt} ")
     if late:
-        body = (f"They still have {late} overdue book(s) out, so the account "
-                f"stays blocked. Once the books are returned, reinstate the "
-                f"account on Users (double-click the row).")
+        body = (f"Compliance is recorded. They still have {late} overdue "
+                f"book(s) out. Tell the student to return the book(s) now; "
+                f"the account stays blocked until you reinstate it on Users "
+                f"(double-click the row).")
     elif row["status"] == "blocked":
-        body = ("All books are back. Reinstate the account on Users "
-                "(double-click the row) to restore borrowing.")
+        body = ("Compliance is recorded and all books are back. Reinstate the "
+                "account on Users (double-click the row) to restore "
+                "borrowing.")
     else:
         body = "The account is active - borrowing is restored."
     if others:
@@ -1133,17 +1146,22 @@ def return_book(db, accession, staff):
         requeue(db, copy["book_id"])
         note = ""
     log_tx(db, loan["user_id"], copy["id"], "Return", staff["id"], status, note)
+    # Returning a book NEVER closes its SDO case. Library policy: the student
+    # must comply at the SDO (face-to-face, paper receipt) BEFORE the case can
+    # be acknowledged, so a book coming back cannot stand in for compliance.
+    # The book is always accepted; the case simply stays pending and the desk
+    # is told so. See §10 row 10 and §11 "SDO compliance order".
     pending = [r["id"] for r in db.all(
         "SELECT id FROM sdo_cases WHERE loan_id=? AND status='pending'",
         (loan["id"],))]
-    db.run("UPDATE sdo_cases SET status='acknowledged', resolved_at=?, "
-           "closed_by='return' WHERE loan_id=? AND status='pending'",
-           (iso(today()), loan["id"]))
-    for cid in pending:
-        announce_case_closed(db, cid, "on return of the book")
     message = "Returned"
     if overdue_days > 0:
         message = f"Returned {overdue_days} day(s) late"
+    if pending:
+        tags = ", ".join(f"SDO-{cid:03d}" for cid in pending)
+        message += (f" — {tags} still pending: the student must comply with "
+                    f"the SDO and show the receipt before the account can be "
+                    f"reinstated.")
     return True, message
 
 
@@ -4354,10 +4372,12 @@ class DashboardScreen(tk.Frame):
                 state = "Pending"
             else:
                 state = (f"Acknowledged {fmt_date(s['resolved_at'])}")
-                if s["closed_by"] == "return":
-                    state += " on return"
-                elif s["closed_by"] == "sdo":
+                if s["closed_by"] == "sdo":
                     state += " after SDO compliance"
+                    if s["receipt_ref"]:
+                        state += f" (receipt {s['receipt_ref']})"
+                elif s["closed_by"] == "return":
+                    state += " on return"
             lines.append(f"  SDO-{s['id']:03d}  {s['name']} ({s['username']})"
                          f"  {s['title']}  due {fmt_date(s['due_date'])}"
                          f"  {late} day(s) overdue  {state}")
@@ -4696,6 +4716,15 @@ class UsersScreen(tk.Frame):
                 warn = (f"\n\nWarning: {deep} book(s) are still {threshold}+ "
                         f"day(s) overdue.\nThe account will be blocked again at "
                         f"the next automatic scan. Reinstate anyway?")
+            # SDO compliance is recorded by Mark acknowledged, never by a
+            # returned book — warn if the desk skips that step.
+            open_cases = self.db.scalar(
+                "SELECT COUNT(*) FROM sdo_cases WHERE user_id=? AND "
+                "status='pending'", (uid,))
+            if open_cases:
+                warn += (f"\n\nWarning: {open_cases} SDO case(s) still pending "
+                         f"— the student has not been acknowledged with an SDO "
+                         f"receipt.\nReinstate anyway?")
         if not messagebox.askyesno("Users",
                                    f"{new.title()} the account of "
                                    f"{user['name']}?{warn}", parent=self):
@@ -4833,23 +4862,30 @@ class CasesScreen(tk.Frame):
             if r["status"] == "pending":
                 button(right, "Mark acknowledged",
                        lambda i=r["id"]: self.ack(i), "ghost").pack(anchor="e")
+                tk.Label(right, text="Awaiting SDO compliance",
+                         bg=bg, fg=fg, font=(BODY, 8)).pack(anchor="e")
             else:
-                # Closed on return vs. closed after SDO compliance; a NULL
+                # 'sdo' = the student complied and showed a receipt. A NULL
                 # closed_by means the row predates the column, so no qualifier.
                 closed = f"Closed {fmt_date(r['resolved_at'])}"
-                if r["closed_by"] == "return":
-                    closed += " on return"
-                elif r["closed_by"] == "sdo":
+                if r["closed_by"] == "sdo":
                     closed += " after SDO compliance"
+                elif r["closed_by"] == "return":
+                    closed += " on return"
                 tk.Label(right, text=closed,
                          bg=bg, fg=fg, font=(BODY, 8)).pack(anchor="e")
+                if r["receipt_ref"]:
+                    tk.Label(right, text=f"Receipt {r['receipt_ref']}",
+                             bg=bg, fg=fg, font=(BODY, 8, "bold")).pack(
+                        anchor="e")
                 hint = None
                 if r["late_count"]:
-                    hint = (f"Still has {r['late_count']} overdue book(s) out "
-                            f"- stays blocked until returned, then reinstate "
-                            f"on Users.")
+                    hint = (f"Compliance recorded. Still has {r['late_count']} "
+                            f"overdue book(s) out - return those, then "
+                            f"reinstate on Users.")
                 elif r["user_status"] == "blocked":
-                    hint = "Account still blocked - reinstate on Users."
+                    hint = ("Compliance recorded and all books back - "
+                            "reinstate on Users.")
                 if hint:
                     tk.Label(txt, text=hint, bg=bg, fg=fg, font=(BODY, 9),
                              anchor="w").pack(anchor="w")
@@ -4865,10 +4901,12 @@ class CasesScreen(tk.Frame):
                  pady=12, anchor="w").pack(fill="x")
 
     # METHOD: ack(self, case_id)
-    # Logic: manual close — refuses a case that is missing or already closed,
-    #        otherwise sets status='acknowledged', resolved_at=today and
-    #        closed_by='sdo', announces it, refreshes the bell and dialogues
-    #        what still restricts; see C4.4.
+    # Logic: manual close — the student must first have complied at the SDO
+    #        and shown the paper receipt, so the receipt number is REQUIRED
+    #        (blank or Cancel aborts, writing nothing). Then sets
+    #        status='acknowledged', resolved_at=today, closed_by='sdo' and
+    #        stores the receipt; announces it, refreshes the bell and dialogues
+    #        what still restricts; see C4.4 and §11 "SDO compliance order".
     def ack(self, case_id):
         case = self.db.one("SELECT * FROM sdo_cases WHERE id=?", (case_id,))
         if not case or case["status"] != "pending":
@@ -4876,14 +4914,30 @@ class CasesScreen(tk.Frame):
                   "That case is already acknowledged.", "info")
             self.shell.navigate("cases")
             return
-        self.db.run("UPDATE sdo_cases SET status='acknowledged', resolved_at=?, "
-                    "closed_by='sdo' WHERE id=? AND status='pending'",
-                    (iso(today()), case_id))
+        receipt = simpledialog.askstring(
+            "SDO receipt",
+            "Receipt number shown by the student.\n\n"
+            "The student must have complied with the Student Disciplinary "
+            "Office first — a returned book is not compliance.\n"
+            "Leave blank to cancel without acknowledging.",
+            parent=self)
+        if receipt is None:
+            return                       # Cancelled — nothing written
+        receipt = receipt.strip()
+        if not receipt:
+            messagebox.showwarning(
+                "SDO receipt",
+                "A receipt number is required to acknowledge. Nothing was "
+                "changed.", parent=self)
+            return
+        self.db.run(
+            "UPDATE sdo_cases SET status='acknowledged', resolved_at=?, "
+            "closed_by='sdo', receipt_ref=? WHERE id=? AND status='pending'",
+            (iso(today()), receipt, case_id))
         announce_case_closed(self.db, case_id, "after SDO compliance")
         self.shell.refresh_bell()
         Toast(self.shell.app, "Case updated",
-              "The record is now with the Student Disciplinary Office.",
-              "info")
+              f"SDO-{case_id:03d} acknowledged - receipt {receipt}.", "info")
         self.shell.navigate("cases")
         messagebox.showinfo("Case acknowledged",
                             ack_guidance(self.db, case_id), parent=self)
