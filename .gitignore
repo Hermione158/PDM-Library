@@ -1,17 +1,13 @@
 __pycache__/
 *.pyc
 scripts
-queries
-
 # --- generated at runtime / by the build: never commit ---
 # SQLite database - regenerated and self-seeded by init_db() on first launch
 # Written by Dashboard -> Export report
 library_report.txt
 # Regenerable with: py scripts\make_seed.py
 library.prod.db
-# PyInstaller work + output folders (regenerate with the .spec file)
-build/
-dist/
+
 # Local-only safety copies and published packages
 backups/
 *.bak-*
