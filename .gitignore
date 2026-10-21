@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 scripts
+presentation
 # --- generated at runtime / by the build: never commit ---
 # SQLite database - regenerated and self-seeded by init_db() on first launch
 # Written by Dashboard -> Export report

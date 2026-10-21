@@ -1702,7 +1702,8 @@ class App(tk.Tk):
     # METHOD: build_login(self)
     # Builds the SIGN-IN screen: maroon hero + white form with Student /
     # Staff / Administrator role tabs, ID + password fields, the
-    # "Create an account" link (student tab only) and the credential hint box.
+    # "Create an account" link (student tab only) and a student-facing
+    # help note. No account credentials are shown on this screen.
     def build_login(self):
         self.clear_root()
         self.user = None
@@ -1752,9 +1753,8 @@ class App(tk.Tk):
             id_label.configure(text={"student": "Student number",
                                      "staff": "Staff ID",
                                      "admin": "Administrator ID"}[role])
-            id_hint.configure(text={"student": "e.g. 2024-018423",
-                                    "staff": "e.g. staff",
-                                    "admin": "e.g. admin"}[role])
+            id_hint.configure(text={"student": "e.g. 2024-018423"}.get(
+                role, "issued by the library"))
             if role == "student":
                 su_link.pack_forget()
                 su_note.pack_forget()
@@ -1784,7 +1784,7 @@ class App(tk.Tk):
                           highlightbackground=LINE)
         id_row.pack(fill="x", pady=(0, 16))
         id_hint = tk.Label(id_row, text="e.g. 2024-018423", bg=WHITE,
-                           fg="#A79C8E", font=(BODY, 11), width=14)
+                           fg="#A79C8E", font=(BODY, 11), width=22)
         id_hint.pack(side="left", padx=(10, 0))
         self.id_entry = entry(id_row)
         self.id_entry.pack(side="left", fill="x", expand=True, ipady=5)
@@ -1839,9 +1839,8 @@ class App(tk.Tk):
                                                pady=10)
         tk.Label(hint, text="New students: create your own account on the Student "
                   "tab and choose your own password.\nForgot your password? "
-                  "See the administrator.\nStaff: pdmstaff  •  Administrator: "
-                  "pdmadmin", bg=GOLD_SOFT, fg="#8A6A15", font=(BODY, 10),
-                  justify="left", wraplength=360).pack(
+                  "See the administrator.", bg=GOLD_SOFT, fg="#8A6A15",
+                  font=(BODY, 10), justify="left", wraplength=360).pack(
             side="left", padx=(0, 12), pady=10)
 
         links = tk.Frame(form, bg=WHITE)
