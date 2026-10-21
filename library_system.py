@@ -770,6 +770,20 @@ def init_db(db):
     if not any(row["name"] == "receipt_ref"
                for row in db.conn.execute("PRAGMA table_info(sdo_cases)")):
         db.run("ALTER TABLE sdo_cases ADD COLUMN receipt_ref TEXT")
+    # ONE OPEN SDO CASE PER STUDENT. Cases used to be opened per overdue loan,
+    # so one student with several late books could hold several pending cases
+    # at once. The case now covers the student, so collapse any duplicates
+    # first: keep the oldest pending case per student and delete the newer
+    # ones (acknowledged history is left untouched). The partial unique index
+    # then makes a second pending case for the same student impossible.
+    duplicates = db.all(
+        "SELECT id FROM sdo_cases WHERE status='pending' AND id NOT IN "
+        "(SELECT MIN(id) FROM sdo_cases WHERE status='pending' "
+        "GROUP BY user_id)")
+    for row in duplicates:
+        db.run("DELETE FROM sdo_cases WHERE id=?", (row["id"],))
+    db.run("CREATE UNIQUE INDEX IF NOT EXISTS ux_sdo_open_user "
+           "ON sdo_cases(user_id) WHERE status='pending'")
     for key, value in (("renew_window", RENEW_WINDOW), ("loan_days", LOAN_DAYS),
                        ("sdo_after", SDO_AFTER)):
         db.run("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
@@ -936,18 +950,15 @@ def notify(db, user_id, title, body, level="info", dedupe=None, kind=None):
 # announce_case_closed(db, case_id, how) — system-wide "SDO case acknowledged" notice; deduped per case; see §10 rows 10/10b.
 def announce_case_closed(db, case_id, how):
     row = db.one(
-        "SELECT s.id, s.receipt_ref, u.name, u.username, b.title "
-        "FROM sdo_cases s "
-        "JOIN users u ON u.id=s.user_id JOIN loans l ON l.id=s.loan_id "
-        "JOIN copies c ON c.id=l.copy_id JOIN books b ON b.id=c.book_id "
+        "SELECT s.id, s.receipt_ref, u.name, u.username "
+        "FROM sdo_cases s JOIN users u ON u.id=s.user_id "
         "WHERE s.id=?", (case_id,))
     if not row:
         return False
     tail = f" (receipt {row['receipt_ref']})" if row["receipt_ref"] else ""
     return notify(db, None, "SDO case acknowledged",
                   f"Case SDO-{row['id']:03d} for {row['name']} "
-                  f"({row['username']}) - {row['title']} was closed {how}"
-                  f"{tail}.",
+                  f"({row['username']}) was closed {how}{tail}.",
                   "info", f"sdoack:{row['id']}")
 
 
@@ -960,8 +971,6 @@ def ack_guidance(db, case_id):
         return ""
     late = db.scalar("SELECT COUNT(*) FROM loans WHERE user_id=? AND "
                      "status='overdue'", (row["user_id"],))
-    others = db.scalar("SELECT COUNT(*) FROM sdo_cases WHERE user_id=? AND "
-                       "status='pending' AND id<>?", (row["user_id"], case_id))
     receipt = f" Receipt {row['receipt_ref']} recorded." if row["receipt_ref"] else ""
     head = (f"SDO-{row['id']:03d} acknowledged for {row['name']} "
             f"({row['username']}).{receipt} ")
@@ -976,8 +985,6 @@ def ack_guidance(db, case_id):
                 "borrowing.")
     else:
         body = "The account is active - borrowing is restored."
-    if others:
-        body += f" {others} other case(s) for this student remain pending."
     return head + body
 
 
@@ -1159,9 +1166,11 @@ def return_book(db, accession, staff):
     # be acknowledged, so a book coming back cannot stand in for compliance.
     # The book is always accepted; the case simply stays pending and the desk
     # is told so. See §10 row 10 and §11 "SDO compliance order".
+    # A case belongs to the student, not to one book: any return by this
+    # student surfaces the open case, whichever loan triggered it.
     pending = [r["id"] for r in db.all(
-        "SELECT id FROM sdo_cases WHERE loan_id=? AND status='pending'",
-        (loan["id"],))]
+        "SELECT id FROM sdo_cases WHERE user_id=? AND status='pending'",
+        (loan["user_id"],))]
     message = "Returned"
     if overdue_days > 0:
         message = f"Returned {overdue_days} day(s) late"
@@ -1303,6 +1312,8 @@ def run_overdue_scan(db, silent=True):
         if loan["status"] == "active" and left < 0:
             db.run("UPDATE loans SET status='overdue' WHERE id=?", (loan["id"],))
         threshold = setting(db, "sdo_after", SDO_AFTER)
+        # A loan escalates once its due date is at least "threshold" days back.
+        cutoff = iso(today() - dt.timedelta(days=threshold))
         if left == 1:
             if notify(db, loan["user_id"], "Return reminder",
                       f"{loan['title']} is due tomorrow, "
@@ -1335,23 +1346,59 @@ def run_overdue_scan(db, silent=True):
                     f"Office.", "error", f"finalwarn:{loan['id']}"):
                 new_alerts.append(("Final warning", loan["title"]))
             if late >= threshold:
-                if not db.one("SELECT id FROM sdo_cases WHERE loan_id=?",
-                              (loan["id"],)):
-                    case = db.run(
-                        "INSERT INTO sdo_cases(loan_id,user_id,reason,"
-                        "status,created_at) VALUES(?,?,?,?,?)",
-                        (loan["id"], loan["user_id"],
-                         f"{loan['title']} overdue by {late} days",
-                         "pending", iso(today())))
-                    notify(db, None, "SDO escalation",
-                           f"Case SDO-{case:03d} opened for {loan['name']} - "
-                           f"{loan['title']} ({late} days overdue).", "error",
-                           f"sdo:{loan['id']}")
-                    notify(db, loan["user_id"], "Referred to the SDO",
-                           "Your overdue record was forwarded to the Student "
-                           "Disciplinary Office.", "error",
-                           f"sdocase:{loan['id']}")
-                    new_alerts.append(("SDO escalation", loan["name"]))
+                # ONE CASE PER STUDENT. The case covers every overdue book, so
+                # it is opened once and later books simply join it. The guard
+                # is the student, not the loan. The partial unique index in
+                # init_db enforces this too; the IntegrityError guard keeps an
+                # older database (or an exe that has not migrated yet) from
+                # aborting the 60-second scan.
+                open_case = db.one(
+                    "SELECT id FROM sdo_cases WHERE user_id=? AND "
+                    "status='pending'", (loan["user_id"],))
+                if not open_case:
+                    try:
+                        case = db.run(
+                            "INSERT INTO sdo_cases(loan_id,user_id,reason,"
+                            "status,created_at) VALUES(?,?,?,?,?)",
+                            (loan["id"], loan["user_id"],
+                             f"Overdue books up to {late} days late",
+                             "pending", iso(today())))
+                    except sqlite3.IntegrityError:
+                        case = None
+                    if case:
+                        notify(db, None, "SDO escalation",
+                               f"Case SDO-{case:03d} opened for "
+                               f"{loan['name']} - {late} day(s) overdue, "
+                               f"account restricted.", "error",
+                               f"sdo:{loan['user_id']}")
+                        notify(db, loan["user_id"], "Referred to the SDO",
+                               "Your overdue record was forwarded to the "
+                               "Student Disciplinary Office. One case now "
+                               "covers all of your overdue books.", "error",
+                               f"sdocase:{loan['user_id']}")
+                        new_alerts.append(("SDO escalation", loan["name"]))
+                else:
+                    # Fold-in notice, deduped on the covered count, so the bell
+                    # only speaks when another book joins the open case. One
+                    # book is simply the case itself and needs no announcement.
+                    covered = db.scalar(
+                        "SELECT COUNT(*) FROM loans WHERE user_id=? AND "
+                        "status='overdue' AND due_date<=?",
+                        (loan["user_id"], cutoff))
+                    if covered > 1:
+                        if notify(db, None, "SDO escalation",
+                                  f"Case SDO-{open_case['id']:03d} for "
+                                  f"{loan['name']} now covers {covered} "
+                                  f"overdue book(s).", "warn",
+                                  f"sdoextra:{loan['user_id']}:{covered}"):
+                            new_alerts.append(("SDO escalation",
+                                               loan["name"]))
+                        notify(db, loan["user_id"], "SDO case updated",
+                               f"Case SDO-{open_case['id']:03d} now covers "
+                               f"{covered} overdue book(s). Return them and "
+                               f"comply at the Student Disciplinary Office.",
+                               "warn",
+                               f"sdocaseextra:{loan['user_id']}:{covered}")
                 db.run("UPDATE users SET status='blocked' WHERE id=? AND "
                        "status='active'", (loan["user_id"],))
                 if notify(db, loan["user_id"], "Account restricted",
@@ -1389,24 +1436,26 @@ def dashboard_stats(db):
                 escalated=escalated, titles=titles)
 
 
-# escalation_buckets(db) — overdue loans split into warn / escalated / pending / acknowledged; see C1.4 / C4.2.
+# escalation_buckets(db) — overdue students split into warn / escalated, plus pending + acknowledged case totals; see C1.4 / C4.2.
 def escalation_buckets(db):
-    rows = db.all("SELECT l.due_date, s.status AS sdo FROM loans l "
-                  "LEFT JOIN sdo_cases s ON s.loan_id=l.id "
-                  "WHERE l.status='overdue'")
-    b = {"warn": 0, "escalated": 0, "pending": 0, "acknowledged": 0}
+    # Counts are per STUDENT, not per book: one student with five late books
+    # is one row in every bucket, matching the one-case-per-student rule.
+    rows = db.all("SELECT user_id, due_date FROM loans "
+                  "WHERE status='overdue'")
+    warn, escalated = set(), set()
     threshold = setting(db, "sdo_after", SDO_AFTER)
     for r in rows:
         late = -days_until(r["due_date"])
         if late >= threshold:
-            b["escalated"] += 1
+            escalated.add(r["user_id"])
         elif late >= 1:
-            b["warn"] += 1
-        if r["sdo"] == "pending":
-            b["pending"] += 1
-        elif r["sdo"] == "acknowledged":
-            b["acknowledged"] += 1
-    return b
+            warn.add(r["user_id"])
+    return dict(
+        warn=len(warn), escalated=len(escalated),
+        pending=db.scalar("SELECT COUNT(*) FROM sdo_cases "
+                          "WHERE status='pending'"),
+        acknowledged=db.scalar("SELECT COUNT(*) FROM sdo_cases "
+                               "WHERE status='acknowledged'"))
 
 
 # weekly_activity(db) — last-7-days transaction counts for the circulation chart.
@@ -3044,8 +3093,9 @@ class DetailsScreen(tk.Frame):
                 b.pack(fill="x")
                 if not ok:
                     b.configure(state="disabled", bg=GREY_BG, fg=GREY_FG)
-            tk.Label(pane, text="Notify me by PDM email and app  ›", bg=WHITE,
-                     fg=MUTED, font=(BODY, 9), anchor="w").pack(
+            tk.Label(pane, text="You'll be notified in the app when your "
+                     "copy is ready", bg=WHITE, fg=MUTED, font=(BODY, 9),
+                     anchor="w", wraplength=250, justify="left").pack(
                 fill="x", pady=(12, 0))
         else:
             button(pane, "Open in circulation", lambda: shell.navigate(
@@ -3104,33 +3154,6 @@ class DetailsScreen(tk.Frame):
         else:
             messagebox.showinfo("Borrow today", msg, parent=self)
         self.shell.navigate("details", book_id=self.book_id)
-# switch_row(parent, title, note, value) — labelled on/off toggle row (reminder settings).
-def switch_row(parent, title, note, value=True):
-    line = tk.Frame(parent, bg=WHITE)
-    line.pack(fill="x", pady=7)
-    tk.Label(line, text=title, bg=WHITE, fg=INK, font=(BODY, 10, "bold"),
-             anchor="w").pack(side="left")
-    tk.Label(line, text=note, bg=WHITE, fg=MUTED, font=(BODY, 9)).pack(
-        side="left", padx=(8, 0))
-    state = tk.BooleanVar(value=value)
-    cv = tk.Canvas(line, width=34, height=18, bg=WHITE, highlightthickness=0,
-                   bd=0, cursor="hand2")
-    cv.pack(side="right")
-
-    # repaints the toggle knob for the current on/off state.
-    def draw():
-        cv.delete("all")
-        on = state.get()
-        rounded_rect(cv, 1, 1, 33, 17, 8,
-                     GREEN_FG if on else "#D6CEC2", GREEN_FG if on else "#D6CEC2")
-        cv.create_oval(17 if on else 3, 3, 31 if on else 17, 17,
-                       fill=WHITE, outline=WHITE)
-
-    cv.bind("<Button-1>", lambda e: (state.set(not state.get()), draw()))
-    draw()
-    return line
-
-
 # loan_status_row(loan) — (pill text, kind) for a loan: overdue / due today / tomorrow / in n days / on time.
 def loan_status_row(loan):
     left = days_until(loan["due_date"])
@@ -3152,7 +3175,7 @@ def loan_status_row(loan):
 # Inherits: tk.Frame
 # Purpose: "My loans & reservations" — four KPI stat cards, the gold due-soon
 #          banner, per-loan rows with a Renew button, a Borrowing status card,
-#          reminder toggles, fine history and the reservations list.
+#          and the reservations list.
 # Logic:   renew() / renew_all() -> renew_loan();  cancel() -> cancel_reservation();
     #          renewals_remaining() feeds the "renewals left" figure.
 # Objects: built by Shell.navigate("loans"); Toast on renew / cancel results.
@@ -3161,8 +3184,8 @@ class LoansScreen(tk.Frame):
     screen_key = "loans"
 
     # METHOD: __init__(self, shell)
-    # Logic: Constructor — KPI cards, due-soon banner, loan rows, status card,
-    # reminder toggles and fine history for shell.user.
+    # Logic: Constructor — KPI cards, due-soon banner, loan rows, status card
+    # and reservations for shell.user.
     def __init__(self, shell):
         super().__init__(shell.body, bg=CREAM)
         self.shell = shell
@@ -3277,7 +3300,6 @@ class LoansScreen(tk.Frame):
         renewals = setting(self.db, "max_renewals", MAX_RENEWALS)
         for label, value in (
                 ("Borrowing limit", f"{len(loans)} of {limit} books"),
-                ("Outstanding fines", "₱0.00"),
                 ("Renewals remaining",
                  f"{max([renewals - l['renewals'] for l in loans], default=renewals)}"
                  " available"),
@@ -3290,25 +3312,6 @@ class LoansScreen(tk.Frame):
                 side="left")
             tk.Label(line, text=value, bg=WHITE, fg=INK,
                      font=(BODY, 9, "bold")).pack(side="right")
-
-        remind = card(right, pad=0)
-        remind.pack(fill="x", pady=(16, 0))
-        tk.Label(remind.inner, text="Reminder settings", bg=WHITE, fg=INK,
-                 font=tkfont.Font(family=HEAD, size=16, weight="bold"),
-                 anchor="w").pack(anchor="w", pady=(0, 8))
-        switch_row(remind.inner, "Email reminders", "1 day before due")
-        switch_row(remind.inner, "In-app reminders", "On")
-        switch_row(remind.inner, "Reservation updates", "Email + in-app")
-
-        fines = card(right, pad=0)
-        fines.pack(fill="x", pady=(16, 0))
-        tk.Label(fines.inner, text="◷", bg=WHITE, fg=MUTED,
-                 font=(BODY, 18)).pack(pady=(0, 6))
-        tk.Label(fines.inner, text="No fine history", bg=WHITE, fg=INK,
-                 font=(BODY, 11, "bold")).pack()
-        tk.Label(fines.inner, text="Adjustments and resolved fines will "
-                 "appear here.", bg=WHITE, fg=MUTED, font=(BODY, 9),
-                 wraplength=240, justify="center").pack(pady=(4, 0))
 
     # METHOD: loan_row(self, parent, loan)
     # Logic: one loan row: cover, meta, dates, pill, Renew button.
@@ -3628,7 +3631,6 @@ class CirculationScreen(tk.Frame):
                 ("Current loans",
                  f"{len(loans)} of {setting(self.db, 'book_limit', BOOK_LIMIT)}"),
                 ("Overdue items", str(len(overdue))),
-                ("Outstanding balance", "₱0.00"),
                 ("Account valid until", fmt_date(
                     parse(u["joined"]).replace(year=parse(u["joined"]).year + 4))
                  if u["joined"] else "-")):
@@ -4292,7 +4294,6 @@ class DashboardScreen(tk.Frame):
         if not cases:
             lines.append("  (none on record)")
         for s in cases:
-            late = max(-days_until(s["due_date"]), 0)
             if s["status"] == "pending":
                 state = "Pending"
             else:
@@ -4304,8 +4305,23 @@ class DashboardScreen(tk.Frame):
                 elif s["closed_by"] == "return":
                     state += " on return"
             lines.append(f"  SDO-{s['id']:03d}  {s['name']} ({s['username']})"
-                         f"  {s['title']}  due {fmt_date(s['due_date'])}"
-                         f"  {late} day(s) overdue  {state}")
+                         f"  {state}")
+            # One case covers every overdue book the student has; closed cases
+            # keep the row for the book that triggered the case.
+            if s["status"] == "pending":
+                books = self.db.all(
+                    "SELECT b.title, l.due_date FROM loans l "
+                    "JOIN copies c ON c.id=l.copy_id "
+                    "JOIN books b ON b.id=c.book_id WHERE l.user_id=? AND "
+                    "l.status='overdue' ORDER BY l.due_date, b.title",
+                    (s["user_id"],))
+                rows = [(b["title"], b["due_date"]) for b in books]
+            else:
+                rows = [(s["title"], s["due_date"])]
+            for title, due in rows:
+                late = max(-days_until(due), 0)
+                lines.append(f"      {title}  due {fmt_date(due)}"
+                             f"  {late} day(s) overdue")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines))
         messagebox.showinfo("Export report", f"Report saved to:\n{path}",
@@ -4749,12 +4765,14 @@ class CasesScreen(tk.Frame):
                           "Disciplinary Office")
         rows = self.db.all(
             "SELECT s.*, u.username, u.name, u.program, "
-            "u.status AS user_status, b.title, l.due_date, l.status, "
+            "u.status AS user_status, b.title, l.due_date, "
             "(SELECT COUNT(*) FROM loans lo WHERE lo.user_id=u.id AND "
             " lo.status='overdue') AS late_count "
             "FROM sdo_cases s JOIN users u ON u.id=s.user_id "
             "JOIN loans l ON l.id=s.loan_id JOIN copies c ON c.id=l.copy_id "
-            "JOIN books b ON b.id=c.book_id ORDER BY s.status, s.id DESC")
+            "JOIN books b ON b.id=c.book_id "
+            "ORDER BY CASE s.status WHEN 'pending' THEN 0 ELSE 1 END, "
+            "s.id DESC")
         holder = tk.Frame(panel.inner, bg=WHITE)
         holder.pack(fill="x", pady=(14, 0))
         if not rows:
@@ -4762,9 +4780,9 @@ class CasesScreen(tk.Frame):
                      fg=MUTED, font=(BODY, 10)).pack(anchor="w", pady=14)
             return
         for r in rows:
-            late = -days_until(r["due_date"])
-            bg = RED_BG if r["status"] == "pending" else BLUE_BG
-            fg = RED_FG if r["status"] == "pending" else BLUE_FG
+            pending = r["status"] == "pending"
+            bg = RED_BG if pending else BLUE_BG
+            fg = RED_FG if pending else BLUE_FG
             line = tk.Frame(holder, bg=bg, highlightthickness=1,
                             highlightbackground=bg)
             line.pack(fill="x", pady=6)
@@ -4777,9 +4795,31 @@ class CasesScreen(tk.Frame):
                      f"{r['program']}", bg=bg, fg=fg, font=(BODY, 10,
                                                             "bold"),
                      anchor="w").pack(anchor="w")
-            tk.Label(txt, text=f"{r['title']}  •  due {fmt_date(r['due_date'])}"
-                     f"  •  {max(late, 0)} days overdue", bg=bg, fg=fg,
-                     font=(BODY, 9), anchor="w").pack(anchor="w")
+            if pending:
+                # One case covers every overdue book this student has, so the
+                # card lists them all (capped) instead of showing one book.
+                books = self.db.all(
+                    "SELECT b.title, l.due_date FROM loans l "
+                    "JOIN copies c ON c.id=l.copy_id "
+                    "JOIN books b ON b.id=c.book_id WHERE l.user_id=? AND "
+                    "l.status='overdue' ORDER BY l.due_date, b.title",
+                    (r["user_id"],))
+                for b in books[:4]:
+                    late = max(-days_until(b["due_date"]), 0)
+                    tk.Label(txt, text=f"{b['title']}  •  due "
+                             f"{fmt_date(b['due_date'])}  •  {late} days "
+                             f"overdue", bg=bg, fg=fg, font=(BODY, 9),
+                             anchor="w").pack(anchor="w")
+                if len(books) > 4:
+                    tk.Label(txt, bg=bg, fg=fg, font=(BODY, 9), anchor="w",
+                             text=f"+{len(books) - 4} more overdue book(s)"
+                             ).pack(anchor="w")
+            else:
+                late = max(-days_until(r["due_date"]), 0)
+                tk.Label(txt, text=f"{r['title']}  •  due "
+                         f"{fmt_date(r['due_date'])}  •  {late} days overdue",
+                         bg=bg, fg=fg, font=(BODY, 9), anchor="w").pack(
+                    anchor="w")
             right = tk.Frame(line, bg=bg)
             right.pack(side="right", padx=14)
             pill(right, "Pending" if r["status"] == "pending"
