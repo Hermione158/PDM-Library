@@ -658,6 +658,9 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
+    first_name TEXT DEFAULT '',
+    middle_name TEXT DEFAULT '',
+    last_name TEXT DEFAULT '',
     role TEXT NOT NULL,
     password TEXT NOT NULL,
     program TEXT DEFAULT '',
@@ -748,6 +751,24 @@ CREATE TABLE IF NOT EXISTS settings (
 
 
 # --- DB SETUP + SEEDING ---
+# split_name(name) — first / middle / last from a joined name string. Used to
+# backfill the split columns for rows that predate them and for the seeded
+# accounts; the registration form supplies the parts directly. A three-word
+# name whose second word is a common surname particle (Dela Cruz, Delos Reyes)
+# keeps that word with the last name instead of misreading it as a middle name.
+def split_name(name):
+    parts = (name or "").split()
+    if not parts:
+        return "", "", ""
+    if len(parts) == 1:
+        return parts[0], "", ""
+    particles = {"dela", "delos", "de", "del", "san", "sta",
+                 "van", "von", "der"}
+    if len(parts) == 3 and parts[1].casefold() in particles:
+        return parts[0], "", parts[1] + " " + parts[2]
+    return parts[0], " ".join(parts[1:-1]), parts[-1]
+
+
 # init_db(db) — schema + seed on first launch; re-seeds the 3 policy settings every launch; see WORKFLOW.md section 2.
 def init_db(db):
     db.conn.executescript(SCHEMA)
@@ -756,6 +777,24 @@ def init_db(db):
     if not any(row["name"] == "section"
                for row in db.conn.execute("PRAGMA table_info(users)")):
         db.run("ALTER TABLE users ADD COLUMN section TEXT DEFAULT ''")
+    # first/middle/last — the registration form captures the name in parts.
+    # `name` stays the authoritative joined string for every other screen, so
+    # older databases only need the parts derived once from it: first token =
+    # first name, last token = last name, everything between = middle name.
+    user_cols = [row["name"] for row in
+                 db.conn.execute("PRAGMA table_info(users)")]
+    if "first_name" not in user_cols:
+        db.run("ALTER TABLE users ADD COLUMN first_name TEXT DEFAULT ''")
+        db.run("ALTER TABLE users ADD COLUMN middle_name TEXT DEFAULT ''")
+        db.run("ALTER TABLE users ADD COLUMN last_name TEXT DEFAULT ''")
+    for row in db.all("SELECT id, name, first_name FROM users"):
+        if row["first_name"]:
+            continue
+        first, middle, last = split_name(row["name"])
+        if first:
+            db.run("UPDATE users SET first_name=?, middle_name=?, "
+                   "last_name=? WHERE id=?",
+                   (first, middle, last, row["id"]))
     # adds closed_by to databases created before that column existed. It
     # records HOW a case closed — 'return' (the book came back) or 'sdo'
     # (staff acknowledged). Left NULL on purpose for rows that were already
@@ -797,23 +836,29 @@ def init_db(db):
 def seed_db(db):
     now = iso(today())
     for username, name, program, year, section, bday in STUDENTS:
+        first, middle, last = split_name(name)
         db.run(
-            "INSERT INTO users(username,name,role,password,program,year_level,"
-            "section,birthdate,status,joined) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (username, name, "student", hash_pw(bday), program, year, section,
-             bday, "active", now))
+            "INSERT INTO users(username,name,first_name,middle_name,last_name,"
+            "role,password,program,year_level,section,birthdate,status,joined) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (username, name, first, middle, last, "student", hash_pw(bday),
+             program, year, section, bday, "active", now))
     for username, name, role, password in STAFF:
+        first, middle, last = split_name(name)
         db.run(
-            "INSERT INTO users(username,name,role,password,program,year_level,"
-            "birthdate,status,joined) VALUES(?,?,?,?,?,?,?,?,?)",
-            (username, name, "staff", hash_pw(password), "Library", "", "",
-             "active", now))
+            "INSERT INTO users(username,name,first_name,middle_name,last_name,"
+            "role,password,program,year_level,birthdate,status,joined) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (username, name, first, middle, last, "staff", hash_pw(password),
+             "Library", "", "", "active", now))
     for username, name, role, password in ADMINS:
+        first, middle, last = split_name(name)
         db.run(
-            "INSERT INTO users(username,name,role,password,program,year_level,"
-            "birthdate,status,joined) VALUES(?,?,?,?,?,?,?,?,?)",
-            (username, name, "admin", hash_pw(password), "Administration", "",
-             "", "active", now))
+            "INSERT INTO users(username,name,first_name,middle_name,last_name,"
+            "role,password,program,year_level,birthdate,status,joined) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (username, name, first, middle, last, "admin", hash_pw(password),
+             "Administration", "", "", "active", now))
     for b in BOOKS:
         (title, author, subject, category, publisher, edition, year, isbn,
          call_no, material, shelf, copies, description) = b
@@ -2061,10 +2106,11 @@ class App(tk.Tk):
 
         self.su_error.configure(text="")
         self.db.run(
-            "INSERT INTO users(username,name,role,password,program,year_level,"
-            "section,birthdate,status,joined) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (username, name, "student", hash_pw(password), program, year,
-             section, "", "active", iso(today())))
+            "INSERT INTO users(username,name,first_name,middle_name,last_name,"
+            "role,password,program,year_level,section,birthdate,status,joined) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (username, name, first, middle, last, "student", hash_pw(password),
+             program, year, section, "", "active", iso(today())))
         user = self.db.one("SELECT * FROM users WHERE username=?",
                            (username,))
         messagebox.showinfo(
@@ -4548,9 +4594,10 @@ class UsersScreen(tk.Frame):
                           "standing")
         holder = tk.Frame(panel.inner, bg=WHITE)
         holder.pack(fill="both", expand=True, pady=(14, 0))
-        self.tv = tree(holder, ["ID", "NAME", "ROLE", "PROGRAM", "SECTION",
-                                "ON LOAN", "OVERDUE", "STATUS"],
-                       [115, 200, 105, 215, 80, 90, 90, 120], height=16)
+        self.tv = tree(holder, ["ID", "FIRST NAME", "MIDDLE NAME", "LAST NAME",
+                                "ROLE", "PROGRAM", "SECTION", "ON LOAN",
+                                "OVERDUE", "STATUS"],
+                       [105, 100, 100, 100, 95, 175, 65, 75, 75, 110], height=16)
         sb = attach_scroll(self.tv, holder)
         self.tv.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
@@ -4573,9 +4620,15 @@ class UsersScreen(tk.Frame):
             overdue = self.db.scalar(
                 "SELECT COUNT(*) FROM loans WHERE user_id=? AND status="
                 "'overdue'", (u["id"],))
+            first = u["first_name"] or ""
+            middle = u["middle_name"] or ""
+            last = u["last_name"] or ""
+            if not first:
+                first, middle, last = split_name(u["name"])
             self.tv.insert("", "end", iid=str(u["id"]), values=(
-                u["username"], u["name"], u["role"].title(),
-                u["program"] or "-", u["section"] or "-", loans, overdue,
+                u["username"], first or "-", middle or "-", last or "-",
+                u["role"].title(), u["program"] or "-", u["section"] or "-",
+                loans, overdue,
                 "●  " + ("Active" if u["status"] == "active" else "Blocked")))
 
     # METHOD: manage_account(self, event)

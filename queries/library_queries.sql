@@ -22,7 +22,8 @@
 -- ---------------------------------------------------------------------
 
 -- Every account, with its current state.
-SELECT username, name, role, program, year_level, section, status, joined
+SELECT username, name, first_name, middle_name, last_name, role, program,
+       year_level, section, status, joined
 FROM users
 ORDER BY role, username;
 

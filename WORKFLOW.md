@@ -294,7 +294,7 @@ Accessed from the link **New student? Create an account** under the sign-in butt
 |---|---|---|
 | A1.1 | **Student number** (prefix `e.g. 2024-018423`) | Must match `\d{4}-\d{6}` → *"Student number should look like 2024-018423."* |
 | A1.2 | — | Must be unused → *"That student number is already registered - sign in instead."* |
-| A1.3 | **First name** · **Middle name (optional)** · **Last name** (placeholders `e.g. Juan`, `e.g. D.`, `e.g. Cruz`) | First and last name required (≥ 2 chars, not the placeholder); middle name optional → *"Enter your first name."* / *"Enter your last name."* The three parts are stored joined in `users.name` (`Juan D. Cruz`, or `Juan Cruz` when no middle name) |
+| A1.3 | **First name** · **Middle name (optional)** · **Last name** (placeholders `e.g. Juan`, `e.g. D.`, `e.g. Cruz`) | First and last name required (≥ 2 chars, not the placeholder); middle name optional → *"Enter your first name."* / *"Enter your last name."* The parts are stored in `users.first_name` / `middle_name` / `last_name`, and joined into `users.name` (`Juan D. Cruz`, or `Juan Cruz` when no middle name) for every other screen |
 | A1.4 | **Program** (dropdown, fixed: BS Information Technology, BS Tourism, BS Hospitality Management, BS Computer Science, BS Early Childhood Education, BTLED, BS Entrepreneurship) · **Year level** (1st–4th Year) · **Section** (A/B/C/D, no default) | All required → *"Select your program and year level."* / *"Select your section (A, B, C or D)."* |
 | A1.5 | **Password** | Each password box has its own **Show** / **Hide** link at the right end (the two boxes toggle independently). ≥ 6 characters → *"Password must be at least 6 characters."* |
 | A1.6 | **Confirm password** | Must match → *"Passwords do not match."* |
@@ -467,7 +467,7 @@ The manual *Identify borrower / Add books* form is gone. Students submit the wor
 
 | Step | Action | System response |
 |---|---|---|
-| C3.1 | Sidebar **Users ◉** | Table ID / NAME / ROLE / PROGRAM / ON LOAN / OVERDUE / STATUS (`● Active`, `● Blocked`) |
+| C3.1 | Sidebar **Users ◉** | Table ID / FIRST NAME / MIDDLE NAME / LAST NAME / ROLE / PROGRAM / ON LOAN / OVERDUE / STATUS (`● Active`, `● Blocked`); an empty middle or last name shows `-` |
 | C3.2 | **Double-click a row** | Opens a **Manage account** dialog showing name, ID, role, program and current status, with three actions: **[Block account] / [Reinstate]**, **[↻ Reset password]** and **[Close]**. Blocking flips `users.status` and refreshes the table; admins get a disabled *Block unavailable* instead. **Reinstate warning:** when reinstating an account that still has books `sdo_after`+ days overdue, the confirmation appends *"Warning: n book(s) are still X+ day(s) overdue. The account will be blocked again at the next automatic scan. Reinstate anyway?"* — declining aborts. **Reset password:** prompts for a temporary password (masked, ≥ 6 characters — same rule as signup), stores it hashed, drops a *"Password reset"* notice into the student's bell, and confirms to the admin. Cancel, a blank entry, or a short value changes nothing |
 | C3.3 | Double-click an administrator | Refused: *"Administrators cannot be blocked."* |
 | C3.4 | Effect of blocking | Sign-in still possible (see §13), but `eligibility()` returns *"Account is blocked"* so checkout and reservation are refused |
