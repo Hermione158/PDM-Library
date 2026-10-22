@@ -294,7 +294,7 @@ Accessed from the link **New student? Create an account** under the sign-in butt
 |---|---|---|
 | A1.1 | **Student number** (prefix `e.g. 2024-018423`) | Must match `\d{4}-\d{6}` → *"Student number should look like 2024-018423."* |
 | A1.2 | — | Must be unused → *"That student number is already registered - sign in instead."* |
-| A1.3 | **Full name** (placeholder `e.g. Juan D. Cruz`) | ≥ 3 chars, contains a space, not the placeholder → *"Enter your complete name (first and last)."* |
+| A1.3 | **First name** · **Middle name (optional)** · **Last name** (placeholders `e.g. Juan`, `e.g. D.`, `e.g. Cruz`) | First and last name required (≥ 2 chars, not the placeholder); middle name optional → *"Enter your first name."* / *"Enter your last name."* The three parts are stored joined in `users.name` (`Juan D. Cruz`, or `Juan Cruz` when no middle name) |
 | A1.4 | **Program** (dropdown, fixed: BS Information Technology, BS Tourism, BS Hospitality Management, BS Computer Science, BS Early Childhood Education, BTLED, BS Entrepreneurship) · **Year level** (1st–4th Year) · **Section** (A/B/C/D, no default) | All required → *"Select your program and year level."* / *"Select your section (A, B, C or D)."* |
 | A1.5 | **Password** | Each password box has its own **Show** / **Hide** link at the right end (the two boxes toggle independently). ≥ 6 characters → *"Password must be at least 6 characters."* |
 | A1.6 | **Confirm password** | Must match → *"Passwords do not match."* |

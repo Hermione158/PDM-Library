@@ -1947,8 +1947,12 @@ class App(tk.Tk):
         self.su_id = entry(id_row)
         self.su_id.pack(side="left", fill="x", expand=True, ipady=5)
 
-        self.su_name = field(form, "Full name")
-        placeholder(self.su_name, "e.g. Juan D. Cruz")
+        self.su_first = field(form, "First name")
+        placeholder(self.su_first, "e.g. Juan")
+        self.su_middle = field(form, "Middle name (optional)")
+        placeholder(self.su_middle, "e.g. D.")
+        self.su_last = field(form, "Last name")
+        placeholder(self.su_last, "e.g. Cruz")
         programs = ["BS Information Technology", "BS Tourism",
                     "BS Hospitality Management", "BS Computer Science",
                     "BS Early Childhood Education", "BTLED",
@@ -2007,12 +2011,15 @@ class App(tk.Tk):
 
     # METHOD: attempt_signup(self)
     # REGISTRATION (Logic P1). Validates student number \d{4}-\d{6}, uniqueness,
-    # full name, program + year, section A-D, password >= 6 chars and match.
-    # Inserts the `users` row (role='student', status='active'), shows the
-    # success dialog and then signs the new student straight in.
+    # first + last name (middle optional), program + year, section A-D,
+    # password >= 6 chars and match. Inserts the `users` row (role='student',
+    # status='active'), shows the success dialog and then signs the new
+    # student straight in.
     def attempt_signup(self):
         username = self.su_id.get().strip()
-        name = self.su_name.get().strip()
+        first = self.su_first.get().strip()
+        middle = self.su_middle.get().strip()
+        last = self.su_last.get().strip()
         program = self.su_program.get().strip()
         year = self.su_year.get().strip()
         section = self.su_section.get().strip()
@@ -2030,9 +2037,15 @@ class App(tk.Tk):
             fail("That student number is already registered - sign in "
                  "instead.")
             return
-        if len(name) < 3 or " " not in name or name.startswith("e.g."):
-            fail("Enter your complete name (first and last).")
+        if len(first) < 2 or first.startswith("e.g."):
+            fail("Enter your first name.")
             return
+        if len(last) < 2 or last.startswith("e.g."):
+            fail("Enter your last name.")
+            return
+        if middle.startswith("e.g."):
+            middle = ""
+        name = " ".join(part for part in (first, middle, last) if part)
         if not program or not year:
             fail("Select your program and year level.")
             return
@@ -2056,7 +2069,7 @@ class App(tk.Tk):
                            (username,))
         messagebox.showinfo(
             "Account created",
-            f"Your account has been created, {name.split()[0]}!\n"
+            f"Your account has been created, {first}!\n"
             "Click OK to open your student dashboard.",
             parent=self)
         self.open_shell(user)
